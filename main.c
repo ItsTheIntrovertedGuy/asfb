@@ -5,7 +5,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
+#include <signal.h>
 #include <sys/mman.h>
+#include <sys/ioctl.h>
+#include <termios.h>
 
 #include "language_layer.h"
 
@@ -14,6 +17,84 @@
 // "dirent.h": Directory stuff
 // "getcwd":   Get full path to working directory
 // "chdir":    Change current working directory
+
+// TODO(Felix): Maybe pull these console ANSI functions out into its include file
+
+typedef struct {
+	char Name[256];
+	i32 NameLength;
+	//u64 Size;
+	enum { 
+		ENTRY_TYPE_DIRECTORY,
+		ENTRY_TYPE_FILE,
+		ENTRY_TYPE_UNKNOWN, 
+	} Type;
+} internal_directory_entry;
+
+
+internal void
+ScreenClear(void)
+{
+	fprintf(stderr, "\033[2J");
+}
+
+internal void
+ClearCurrentLine(void)
+{
+	fprintf(stderr, "\033[2K");
+}
+
+internal void
+EchoDisable(void)
+{
+	struct termios TerminalSettings = { 0 };
+	tcgetattr(STDOUT_FILENO, &TerminalSettings);
+	TerminalSettings.c_lflag &= (tcflag_t) ~ECHO;
+	tcsetattr(STDOUT_FILENO, TCSANOW, &TerminalSettings);
+}
+
+internal void
+EchoEnable(void)
+{
+	struct termios TerminalSettings = { 0 };
+	tcgetattr(STDOUT_FILENO, &TerminalSettings);
+	TerminalSettings.c_lflag |= (tcflag_t) ECHO;
+	tcsetattr(STDOUT_FILENO, TCSANOW, &TerminalSettings);
+}
+
+internal void
+CursorHide(void)
+{
+	fprintf(stderr, "\033[?25l");
+}
+
+internal void
+CursorShow(void)
+{
+	fprintf(stderr, "\033[?25h");
+}
+
+internal void
+CursorMove(i32 Y, i32 X)
+{
+	// NOTE(Felix): This function is zero indexed, ANSI escape sequences apparently aren't though
+	char Buffer[20] = { 0 };
+	i32 CharactersToWrite = snprintf(Buffer, sizeof(Buffer), "\033[%d;%dH", Y+1, X+1);
+	write(STDOUT_FILENO, Buffer, (size_t)CharactersToWrite);
+}
+
+
+internal void
+SignalHandler(int Signal)
+{
+	// TODO(Felix): Cleanup
+	ScreenClear();
+	EchoEnable();
+	CursorShow();
+	CursorMove(0, 0);
+	exit(-1);
+}
+
 
 internal void
 DirectoryEntryPrint(struct dirent *DirectoryEntry)
@@ -24,16 +105,6 @@ DirectoryEntryPrint(struct dirent *DirectoryEntry)
 	fprintf(stderr, "d_type:   %d\n",   DirectoryEntry->d_type);
 	fprintf(stderr, "d_name:   %s\n\n", DirectoryEntry->d_name);
 }
-
-typedef struct {
-	char Name[256];
-	//u64 Size;
-	enum { 
-		ENTRY_TYPE_DIRECTORY,
-		ENTRY_TYPE_FILE,
-		ENTRY_TYPE_UNKNOWN, 
-	} Type;
-} internal_directory_entry;
 
 internal b32
 InternalEntryCompareName(internal_directory_entry *A, internal_directory_entry *B)
@@ -115,6 +186,7 @@ CreateInternalEntryFromDirent(struct dirent *Entry)
 {
 	internal_directory_entry Result = { 0 };
 	MemoryCopy(&Result.Name, Entry->d_name, sizeof(Entry->d_name));
+	Result.NameLength = (i32)StringLength(Result.Name);
 	switch (Entry->d_type)
 	{
 		case DT_DIR: {
@@ -157,6 +229,24 @@ DirentPassesFilter(struct dirent *Entry)
 int
 main(void)
 {
+	// NOTE(Felix): Set signal so a CTRL-C restores console settings
+	{
+		struct sigaction SignalAction = { 0 };
+		SignalAction.sa_handler = &SignalHandler;
+		sigaction(SIGINT, &SignalAction, 0);
+	}
+	
+	// TODO(Felix): "When the window size changes, a SIGWINCH signal is sent to the foreground process group"
+	// We probably want to catch this signal and update console dimensions
+	
+	// NOTE(Felix): Disable buffering of input, we want to process it immediately
+	{
+		struct termios TerminalSettings = { 0 };
+		tcgetattr(STDOUT_FILENO, &TerminalSettings);
+		TerminalSettings.c_lflag &= (tcflag_t)~ICANON;
+		tcsetattr(STDOUT_FILENO, TCSANOW, &TerminalSettings);
+	}
+
 	// NOTE(Felix): Get current directory and format properly
 	char BufferCurrentDirectory[PATH_MAX] = { 0 };
 	getcwd(BufferCurrentDirectory, sizeof(BufferCurrentDirectory));
@@ -197,14 +287,87 @@ main(void)
 		InternalEntryListSort(DirectoryEntriesBuffer+EntryFilesStartIndex, (i32)DirectoryEntriesBufferIndex-EntryFilesStartIndex, &InternalEntryCompareName);
 	}
 	
-	// NOTE(Felix): Print all valid entries
-	for (u32 InternalEntryIndex = 0;
-		 InternalEntryIndex < DirectoryEntriesBufferIndex;
-		 ++InternalEntryIndex)
+	// NOTE(Felix): Prepare for drawing
+	EchoDisable();
+	ScreenClear();
+	CursorHide();
+	CursorMove(0, 0);
+
+	// NOTE(Felix): Get Console dimensions
+	i32 ConsoleRows = 0;
+	i32 ConsoleColumns = 0;
 	{
-		InternalEntryPrint(DirectoryEntriesBuffer[InternalEntryIndex]);
+		struct winsize ConsoleDimensions = { 0 };
+		ioctl(STDOUT_FILENO, TIOCGWINSZ, &ConsoleDimensions);
+		ConsoleRows = ConsoleDimensions.ws_row;
+		ConsoleColumns = ConsoleDimensions.ws_col;
+	}
+	(void)ConsoleRows;
+	(void)ConsoleColumns;
+
+	// NOTE(Felix): Draw
+	b32 ExitProgram = 0;
+	i32 CurrentIndex = 0;
+	while (0 == ExitProgram)
+	{
+		// NOTE(Felix): Print all valid entries
+		for (u32 InternalEntryIndex = 0;
+		     InternalEntryIndex < DirectoryEntriesBufferIndex;
+		     ++InternalEntryIndex)
+		{
+			CursorMove((i32)InternalEntryIndex, 0);
+
+			// NOTE(Felix): Highlight line
+			if ((i32)InternalEntryIndex == CurrentIndex)
+			{
+				fprintf(stderr, "\033[30;47m");
+			}
+			else
+			{
+				fprintf(stderr, "\033[37;40m");
+			}
+
+			ClearCurrentLine();
+			fprintf(stderr, "%s", DirectoryEntriesBuffer[InternalEntryIndex].Name);
+		}
+		
+		// NOTE(Felix): Process input
+		char InputCharacter = (char)getchar();
+		switch (InputCharacter)
+		{
+			// NOTE(Felix): Move down
+			case 'j': {
+				CurrentIndex = MIN((i32)DirectoryEntriesBufferIndex-1, CurrentIndex+1);
+			} break;
+			
+			// NOTE(Felix): Move Up
+			case 'k': {
+
+				CurrentIndex = MAX(0, CurrentIndex-1);
+			} break;
+			
+			// TODO(Felix): Open file
+			case 'l': {
+			} break;
+			
+			// NOTE(Felix): Exit program
+			case 'q': {
+				ExitProgram = 1;
+			} break;
+			
+			// NOTE(Felix): Unbound key
+			default: {
+				// noop;
+			} break;
+		}
 	}
 
+	// NOTE(Felix): Cleanup
+	fprintf(stderr, "\033[37;40m");
+	ScreenClear();
+	EchoEnable();
+	CursorShow();
+	CursorMove(0, 0);
 	munmap(DirectoryEntriesBuffer, DirectoryEntriesBufferSize);
 	return (0);
 }
