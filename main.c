@@ -8,7 +8,11 @@
 #include <signal.h>
 #include <sys/mman.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
 #include <termios.h>
+#include <poll.h>
+#include <errno.h>
 
 #include "language_layer.h"
 
@@ -20,7 +24,32 @@
 
 // TODO(Felix): Maybe pull these console ANSI functions out into its include file
 
-typedef enum {
+typedef struct 
+{
+	char *FileEnding;
+	char *PathToProgram;
+	b32 IsConsoleApplication;
+} file_type_config;
+
+global_variable file_type_config GLOBALFileTypeConfig[] = {
+	{ "",        "/bin/nvim", 1 }, // NOTE(Felix): Default
+
+	{ ".pdf",    "/bin/zathura" },
+	{ ".djvu",   "/bin/zathura" },
+
+	{ ".png",    "/bin/feh" },
+	{ ".jpeg",   "/bin/feh" },
+	{ ".jpg",    "/bin/feh" },
+	{ ".gif",    "/bin/feh" },
+
+	{ ".mp4",    "/bin/mpv" },
+};
+
+
+global_variable b32 GLOBALUpdateConsoleDimensions = 0;
+
+typedef enum 
+{
 	// NOTE(Felix): Magic ANSI constants
 	// http://ascii-table.com/ansi-escape-sequences.php
 	COLOR_DEFAULT_BACKGROUND              = 40,
@@ -35,12 +64,14 @@ typedef enum {
 	COLOR_SELECTED_FOREGROUND             = 30,
 } ansi_color_code;
 
-typedef struct {
+typedef struct 
+{
 	ansi_color_code Background;
 	ansi_color_code Foreground;
 } color;
 
-typedef struct {
+typedef struct
+{
 	char Name[256];
 	i32 NameLength;
 	//u64 Size;
@@ -63,6 +94,68 @@ StringEqual(char *A, char *B)
 	}
 	
 	return (A[Index] == B[Index]);
+}
+
+internal char *
+GetProgramNameFromFullPath(char *FullPath)
+{
+	i32 LastSlashIndex = 0;
+	for (i32 Index = 0; FullPath[Index] != 0; ++Index)
+	{
+		if (FullPath[Index] == '/')
+		{
+			LastSlashIndex = Index;
+		}
+	}
+	return (FullPath+LastSlashIndex+1);
+}
+
+internal char *
+GetFileType(char *FileName)
+{
+	i32 LastDotIndex = 0;
+	for (i32 Index = 0; FileName[Index] != 0; ++Index)
+	{
+		if (FileName[Index] == '.')
+		{
+			LastDotIndex = Index;
+		}
+	}
+	if (LastDotIndex > 0)
+	{
+		return (FileName+LastDotIndex);
+	}
+	else
+	{
+		return (0);
+	}
+}
+
+internal file_type_config
+GetProgramToUseConfig(char *FileName)
+{
+	char *FileType = GetFileType(FileName);
+	if (FileType != 0)
+	{
+		for (i32 ConfigIndex = 1; ConfigIndex < (i32)ARRAYCOUNT(GLOBALFileTypeConfig); ++ConfigIndex)
+		{
+			if (StringEqual(FileType, GLOBALFileTypeConfig[ConfigIndex].FileEnding))
+			{
+				return (GLOBALFileTypeConfig[ConfigIndex]);
+			}
+		}
+	}
+
+	// NOTE(Felix): No match, use default software
+	return (GLOBALFileTypeConfig[0]);
+}
+
+internal b32
+FileIsExecutable(char *FileName)
+{
+	struct stat FileData = { 0 };
+	stat(FileName, &FileData);
+	return (FileData.st_mode & S_IXUSR);
 }
 
 internal void
@@ -112,6 +205,8 @@ LeaveDirectory(char *PathBuffer)
 	{
 		PathBuffer[SecondLastSlashIndex+1] = 0;
 	}
+	
+	chdir(PathBuffer);
 }
 
 internal color
@@ -429,7 +524,14 @@ DirectoryEnter(char *PathBuffer, char *DirectoryName)
 }
 
 internal void
-CleanUpConsole(void)
+ConsoleSetup(void)
+{
+	EchoDisable();
+	CursorHide();
+}
+
+internal void
+ConsoleCleanup(void)
 {
 	ColorResetToDefault();
 	ScreenClear();
@@ -439,10 +541,16 @@ CleanUpConsole(void)
 }
 
 internal void
-SignalHandler(int Signal)
+SignalSIGINTHandler(int Signal)
 {
-	CleanUpConsole();
+	ConsoleCleanup();
 	exit(-1);
+}
+
+internal void
+SignalSIGWINCHHandler(int Signal)
+{
+	GLOBALUpdateConsoleDimensions = 1;
 }
 
 int
@@ -451,19 +559,26 @@ main(void)
 	// NOTE(Felix): Set signal so a CTRL-C restores console settings
 	{
 		struct sigaction SignalAction = { 0 };
-		SignalAction.sa_handler = &SignalHandler;
+		SignalAction.sa_handler = &SignalSIGINTHandler;
 		sigaction(SIGINT, &SignalAction, 0);
 	}
 	
-	// TODO(Felix): "When the window size changes, a SIGWINCH signal is sent to the foreground process group"
-	// We probably want to catch this signal and update console dimensions
+	// NOTE(Felix): Handle resize signal so we can reformat the window
+#if 0
+	// Unused at the moment as it we don't even have scrolling
+	{
+		struct sigaction SignalAction = { 0 };
+		SignalAction.sa_handler = &SignalSIGWINCHHandler;
+		sigaction(SIGWINCH, &SignalAction, 0);
+	}
+#endif
 	
 	// NOTE(Felix): Disable buffering of input, we want to process it immediately
 	{
 		struct termios TerminalSettings = { 0 };
-		tcgetattr(STDOUT_FILENO, &TerminalSettings);
+		tcgetattr(STDIN_FILENO, &TerminalSettings);
 		TerminalSettings.c_lflag &= (tcflag_t)~ICANON;
-		tcsetattr(STDOUT_FILENO, TCSANOW, &TerminalSettings);
+		tcsetattr(STDIN_FILENO, TCSANOW, &TerminalSettings);
 	}
 
 	// NOTE(Felix): Get current directory string and format properly
@@ -478,8 +593,7 @@ main(void)
 	SortDirectoryEntries(DirectoryEntriesBuffer, DirectoryEntriesBufferIndex);
 	
 	// NOTE(Felix): Prepare for drawing
-	EchoDisable();
-	CursorHide();
+	ConsoleSetup();
 
 	// NOTE(Felix): Get Console dimensions
 	i32 ConsoleRows = 0;
@@ -495,7 +609,7 @@ main(void)
 
 	// NOTE(Felix): Draw
 	b32 ExitProgram = 0;
-	i32 CurrentIndex = 0;
+	i32 SelectedIndex = 1;
 	while (0 == ExitProgram)
 	{
 		ColorResetToDefault();
@@ -509,7 +623,7 @@ main(void)
 			internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[InternalEntryIndex];
 			CursorMove((i32)InternalEntryIndex, 0);
 			
-			color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == CurrentIndex);
+			color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
 			ColorSet(LineColor);
 			ClearCurrentLine();
 
@@ -517,22 +631,55 @@ main(void)
 		}
 		
 		// NOTE(Felix): Process input
-		char InputCharacter = (char)getchar();
+#if 1
+		int InputCharacter = 0;
+		read(STDIN_FILENO, &InputCharacter, sizeof(InputCharacter));
+#else
+		// NOTE(Felix): At the moment, this is useless.
+		// if we actually format the window properly, this may come in handy in the future
+		int InputCharacter = 0;
+		{
+			struct pollfd PollRequest = { 0 };
+			PollRequest.fd = STDIN_FILENO;
+			PollRequest.events = POLLIN;
+
+			while (0 == PollRequest.revents &&
+				   0 == GLOBALUpdateConsoleDimensions)
+			{
+				poll(&PollRequest, 1, 500);
+			}
+			
+			if (GLOBALUpdateConsoleDimensions)
+			{
+				// TODO(Felix): Maybe pullout into function
+				struct winsize ConsoleDimensions = { 0 };
+				ioctl(STDOUT_FILENO, TIOCGWINSZ, &ConsoleDimensions);
+				ConsoleRows = ConsoleDimensions.ws_row;
+				ConsoleColumns = ConsoleDimensions.ws_col;
+				GLOBALUpdateConsoleDimensions = 0;
+				
+				// NOTE(Felix): Force redraw
+				continue;
+			}
+			
+			read(STDIN_FILENO, &InputCharacter, sizeof(InputCharacter));
+		}
+#endif
 		switch (InputCharacter)
 		{
 			// NOTE(Felix): Move down
 			case 'j': {
 				// TODO(Felix): Scrolling
-				CurrentIndex = MIN((i32)DirectoryEntriesBufferIndex-1, CurrentIndex+1);
+				SelectedIndex = MIN((i32)DirectoryEntriesBufferIndex-1, SelectedIndex+1);
 			} break;
 			
 			// NOTE(Felix): Move Up
 			case 'k': {
 				// TODO(Felix): Scrolling
-				CurrentIndex = MAX(0, CurrentIndex-1);
+				SelectedIndex = MAX(0, SelectedIndex-1);
 			} break;
 			
-			// TODO(Felix): Leave directory
+			// NOTE(Felix): Leave directory
 			case 'h': {
 				// NOTE(Felix): Make sure we're not in the "root directory"
 				if (0 == (PathBuffer[0] == '/' && PathBuffer[1] == 0))
@@ -542,24 +689,67 @@ main(void)
 					ReadCurrentDirectoryNameIntoBuffer(PreviousDirectoryStringBuffer, PathBuffer);
 					LeaveDirectory(PathBuffer);
 					DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
-					CurrentIndex = DirectoryGetIndexFromName(DirectoryEntriesBuffer, PreviousDirectoryStringBuffer);
+					SelectedIndex = DirectoryGetIndexFromName(DirectoryEntriesBuffer, PreviousDirectoryStringBuffer);
 					ScreenClear();
 				}
 			} break;
 			
 			// NOTE(Felix): Open file or enter directory
 			case 'l': {
-				internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[CurrentIndex];
+				internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[SelectedIndex];
 				switch (CurrentEntry.Type)
 				{
 					case ENTRY_TYPE_FILE: {
-						// TODO(Felix): 
+						if (FileIsExecutable(CurrentEntry.Name))
+						{
+							// NOTE(Felix): Append executable to path
+							u32 PathLength = StringLength(PathBuffer);
+							u32 FileLength = StringLength(CurrentEntry.Name);
+							MemoryCopy(PathBuffer+PathLength, CurrentEntry.Name, FileLength);
+							ConsoleCleanup();
+
+							// NOTE(Felix): Execl replaces current process if successfull
+							int ReturnValue = execl(PathBuffer, CurrentEntry.Name, 0);
+							ScreenClear();
+							fprintf(stderr, "Error: %d\n", errno);
+							exit(-1);
+						}
+						else
+						{
+							file_type_config ProgramToUseConfig = GetProgramToUseConfig(CurrentEntry.Name);
+							char *ProgramName = GetProgramNameFromFullPath(ProgramToUseConfig.PathToProgram);
+							fprintf(stderr, "\n%s\n%s\n%s\n%s\n", CurrentEntry.Name, ProgramToUseConfig.PathToProgram, ProgramName, PathBuffer);
+
+							ConsoleCleanup();
+							pid_t ChildProcessID = fork();
+							if (0 == ChildProcessID)
+							{
+								// NOTE(Felix): This is the child process
+								if (ProgramToUseConfig.IsConsoleApplication)
+								{
+									// NOTE(Felix): Unlink from parent
+									setsid();
+								}
+								execl(ProgramToUseConfig.PathToProgram, ProgramName, CurrentEntry.Name, 0);
+							}
+							else
+							{
+								// NOTE(Felix): This is the parent process
+
+								if (ProgramToUseConfig.IsConsoleApplication)
+								{
+									// NOTE(Felix): Wait for child to finish, as it is using the console drawing 
+									waitpid(ChildProcessID, 0, 0);
+								}
+							}
+							ConsoleSetup();
+						}
 					} break;
 
 					case ENTRY_TYPE_DIRECTORY: {
 						DirectoryEnter(PathBuffer, CurrentEntry.Name);
 						DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
-						CurrentIndex = 0;
+						SelectedIndex = 0;
 						ScreenClear();
 					} break;
 
@@ -582,7 +772,7 @@ main(void)
 	}
 
 	// NOTE(Felix): Shutdown
-	CleanUpConsole();
+	ConsoleCleanup();
 	munmap(DirectoryEntriesBuffer, DirectoryEntriesBufferSize);
 	return (0);
 }
