@@ -20,6 +20,26 @@
 
 // TODO(Felix): Maybe pull these console ANSI functions out into its include file
 
+typedef enum {
+	// NOTE(Felix): Magic ANSI constants
+	// http://ascii-table.com/ansi-escape-sequences.php
+	COLOR_DEFAULT_BACKGROUND              = 40,
+	COLOR_DEFAULT_FOREGROUND              = 37,
+
+	COLOR_UNSELECTED_BACKGROUND           = 40,
+	COLOR_UNSELECTED_FOREGROUND_FILE      = 37,
+	COLOR_UNSELECTED_FOREGROUND_DIRECTORY = 34,
+
+	COLOR_SELECTED_BACKGROUND_FILE        = 47,
+	COLOR_SELECTED_BACKGROUND_DIRECTORY   = 44,
+	COLOR_SELECTED_FOREGROUND             = 30,
+} ansi_color_code;
+
+typedef struct {
+	ansi_color_code Background;
+	ansi_color_code Foreground;
+} color;
+
 typedef struct {
 	char Name[256];
 	i32 NameLength;
@@ -30,6 +50,135 @@ typedef struct {
 		ENTRY_TYPE_UNKNOWN, 
 	} Type;
 } internal_directory_entry;
+
+internal b32
+StringEqual(char *A, char *B)
+{
+	i32 Index = 0;
+	for (; 
+		 A[Index] == B[Index] && A[Index] != 0 && B[Index] != 0;
+		++Index)
+	{
+		// noop
+	}
+	
+	return (A[Index] == B[Index]);
+}
+
+internal void
+ReadCurrentDirectoryNameIntoBuffer(char *BufferToReadInto, char *PathBuffer)
+{
+	// NOTE(Felix): Find Slashes
+	i32 LastSlashIndex = 0;
+	i32 SecondLastSlashIndex = 0;
+	for (i32 BufferIndex = 0; PathBuffer[BufferIndex] != 0; ++BufferIndex)
+	{
+		if (PathBuffer[BufferIndex] == '/')
+		{
+			SecondLastSlashIndex = LastSlashIndex;
+			LastSlashIndex = BufferIndex;
+		}
+	}
+	
+	// NOTE(Felix): Read String inbetween slashes into Buffer
+	if (LastSlashIndex != 0 && SecondLastSlashIndex != 0)
+	{
+		i32 Index = 0;
+		for (; SecondLastSlashIndex+Index+1 != LastSlashIndex; ++Index)
+		{
+			BufferToReadInto[Index] = PathBuffer[SecondLastSlashIndex+Index+1];
+		}
+		BufferToReadInto[Index] = 0;
+	}
+}
+
+internal void 
+LeaveDirectory(char *PathBuffer)
+{
+	// NOTE(Felix): Find Slashes
+	i32 LastSlashIndex = 0;
+	i32 SecondLastSlashIndex = 0;
+	for (i32 BufferIndex = 0; PathBuffer[BufferIndex] != 0; ++BufferIndex)
+	{
+		if (PathBuffer[BufferIndex] == '/')
+		{
+			SecondLastSlashIndex = LastSlashIndex;
+			LastSlashIndex = BufferIndex;
+		}
+	}
+	
+	// NOTE(Felix): End string after second last slash
+	if (SecondLastSlashIndex != 0 && LastSlashIndex != 0)
+	{
+		PathBuffer[SecondLastSlashIndex+1] = 0;
+	}
+}
+
+internal color
+LineColorGetFromEntry(internal_directory_entry Entry, b32 EntrySelected)
+{
+	color Result = { 0 };
+	
+	if (EntrySelected)
+	{
+		ansi_color_code BackgroundColor = 0;
+		switch (Entry.Type)
+		{
+			case ENTRY_TYPE_FILE: {
+				BackgroundColor = COLOR_SELECTED_BACKGROUND_FILE;
+	 		} break;
+
+			case ENTRY_TYPE_DIRECTORY: {
+				BackgroundColor = COLOR_SELECTED_BACKGROUND_DIRECTORY;
+			} break;
+			
+			default: {
+				BackgroundColor = COLOR_SELECTED_BACKGROUND_FILE;
+			} break;
+		}
+
+		Result.Foreground = COLOR_SELECTED_FOREGROUND;
+		Result.Background = BackgroundColor;
+	}
+	else
+	{
+		ansi_color_code ForegroundColor = 0;
+		switch (Entry.Type)
+		{
+			case ENTRY_TYPE_FILE: {
+				ForegroundColor = COLOR_UNSELECTED_FOREGROUND_FILE;
+			} break;
+
+			case ENTRY_TYPE_DIRECTORY: {
+				ForegroundColor = COLOR_UNSELECTED_FOREGROUND_DIRECTORY;
+			} break;
+
+			default: {
+				ForegroundColor = COLOR_UNSELECTED_FOREGROUND_FILE;
+			} break;
+		}
+
+		Result.Foreground = ForegroundColor;
+		Result.Background = COLOR_UNSELECTED_BACKGROUND;
+	}
+	
+	return (Result);
+}
+
+internal void
+ColorSet(color Color)
+{
+	fprintf(stderr, "\033[%d;%dm", Color.Background, Color.Foreground);
+}
+
+internal void
+ColorResetToDefault()
+{
+	color Default = { 0 };
+	Default.Background = COLOR_DEFAULT_BACKGROUND;
+	Default.Foreground = COLOR_DEFAULT_FOREGROUND;
+	ColorSet(Default);
+}
 
 
 internal void
@@ -82,19 +231,6 @@ CursorMove(i32 Y, i32 X)
 	i32 CharactersToWrite = snprintf(Buffer, sizeof(Buffer), "\033[%d;%dH", Y+1, X+1);
 	write(STDOUT_FILENO, Buffer, (size_t)CharactersToWrite);
 }
-
-
-internal void
-SignalHandler(int Signal)
-{
-	// TODO(Felix): Cleanup
-	ScreenClear();
-	EchoEnable();
-	CursorShow();
-	CursorMove(0, 0);
-	exit(-1);
-}
-
 
 internal void
 DirectoryEntryPrint(struct dirent *DirectoryEntry)
@@ -226,6 +362,89 @@ DirentPassesFilter(struct dirent *Entry)
 	return (1);
 }
 
+internal void
+SortDirectoryEntries(internal_directory_entry *Buffer, u32 Count)
+{
+	InternalEntryListSort(Buffer, (i32)Count, &InternalEntryCompareType);
+
+	// NOTE(Felix): Find end of directory / start of files and sort each sublist by name
+	i32 EntryFilesStartIndex = 0;
+	for (; Buffer[EntryFilesStartIndex].Type != ENTRY_TYPE_FILE; ++EntryFilesStartIndex) {  }
+
+	InternalEntryListSort(Buffer, EntryFilesStartIndex, &InternalEntryCompareName);
+	InternalEntryListSort(Buffer+EntryFilesStartIndex, (i32)Count-EntryFilesStartIndex, &InternalEntryCompareName);
+}
+
+internal u32
+DirectoryReadIntoBuffer(internal_directory_entry *Buffer, char *DirectoryPath)
+{
+	// NOTE(Felix): Open directory stream
+	DIR *DirectoryStream = opendir(DirectoryPath);
+	
+	// NOTE(Felix): Gather and store all valid entries
+	struct dirent *DirectoryEntry = readdir(DirectoryStream);
+	u32 EntryCount = 0;
+	while (DirectoryEntry != 0)
+	{
+		if (DirentPassesFilter(DirectoryEntry))
+		{
+			//DirectoryEntryPrint(DirectoryEntry);
+			internal_directory_entry InternalEntry = CreateInternalEntryFromDirent(DirectoryEntry);
+			Buffer[EntryCount] = InternalEntry;
+			EntryCount++;
+		}
+		DirectoryEntry = readdir(DirectoryStream);
+	}
+	closedir(DirectoryStream);
+	
+	SortDirectoryEntries(Buffer, EntryCount);
+	return (EntryCount);
+}
+
+internal i32
+DirectoryGetIndexFromName(internal_directory_entry *Buffer, char *EntryName)
+{
+	i32 Index = 0;
+	while (0 == StringEqual(Buffer[Index].Name, EntryName))
+	{
+		++Index;
+	}
+	return (Index);
+}
+
+internal void
+DirectoryEnter(char *PathBuffer, char *DirectoryName)
+{
+	// NOTE(Felix): Append DirectoryName to PathBuffer
+	i32 EndOfPathIndex = (i32)StringLength(PathBuffer);
+	i32 DirectoryNameLength = (i32)StringLength(DirectoryName);
+	for (i32 Index = 0; Index < DirectoryNameLength; ++Index)
+	{
+		PathBuffer[EndOfPathIndex+Index] = DirectoryName[Index];
+	}
+	
+	PathBuffer[EndOfPathIndex+DirectoryNameLength+0] = '/';
+	PathBuffer[EndOfPathIndex+DirectoryNameLength+1] =   0;
+	chdir(PathBuffer);
+}
+
+internal void
+CleanUpConsole(void)
+{
+	ColorResetToDefault();
+	ScreenClear();
+	EchoEnable();
+	CursorShow();
+	CursorMove(0, 0);
+}
+
+internal void
+SignalHandler(int Signal)
+{
+	CleanUpConsole();
+	exit(-1);
+}
+
 int
 main(void)
 {
@@ -247,51 +466,20 @@ main(void)
 		tcsetattr(STDOUT_FILENO, TCSANOW, &TerminalSettings);
 	}
 
-	// NOTE(Felix): Get current directory and format properly
-	char BufferCurrentDirectory[PATH_MAX] = { 0 };
-	getcwd(BufferCurrentDirectory, sizeof(BufferCurrentDirectory));
-	i32 BufferCurrentDirectoryIndex = (i32)StringLength(BufferCurrentDirectory);
-	BufferCurrentDirectory[BufferCurrentDirectoryIndex] = '/';
+	// NOTE(Felix): Get current directory string and format properly
+	char PathBuffer[PATH_MAX] = { 0 };
+	getcwd(PathBuffer, sizeof(PathBuffer));
+	PathBuffer[(i32)StringLength(PathBuffer)] = '/';
 
+	// NOTE(Felix): Create and fill buffer that holds contents of current directory
 	u32 DirectoryEntriesBufferSize = MEBIBYTES(1);
 	internal_directory_entry *DirectoryEntriesBuffer = mmap(0, DirectoryEntriesBufferSize, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	u32 DirectoryEntriesBufferIndex = 0;
-
-	// NOTE(Felix): Open directory stream
-	DIR *DirectoryStream = opendir(BufferCurrentDirectory);
-	
-	// NOTE(Felix): Gather and store all valid entries
-	struct dirent *DirectoryEntry = readdir(DirectoryStream);
-	while (DirectoryEntry != 0)
-	{
-		if (DirentPassesFilter(DirectoryEntry))
-		{
-			//DirectoryEntryPrint(DirectoryEntry);
-			internal_directory_entry InternalEntry = CreateInternalEntryFromDirent(DirectoryEntry);
-			DirectoryEntriesBuffer[DirectoryEntriesBufferIndex] = InternalEntry;
-			DirectoryEntriesBufferIndex++;
-		}
-		DirectoryEntry = readdir(DirectoryStream);
-	}
-	closedir(DirectoryStream);
-	
-	// NOTE(Felix): Sort 
-	{
-		InternalEntryListSort(DirectoryEntriesBuffer, (i32)DirectoryEntriesBufferIndex, &InternalEntryCompareType);
-		
-		// NOTE(Felix): Find end of directory / start of files and sort each sublist by name
-		i32 EntryFilesStartIndex = 0;
-		for (; DirectoryEntriesBuffer[EntryFilesStartIndex].Type != ENTRY_TYPE_FILE; ++EntryFilesStartIndex) {  }
-
-		InternalEntryListSort(DirectoryEntriesBuffer, EntryFilesStartIndex, &InternalEntryCompareName);
-		InternalEntryListSort(DirectoryEntriesBuffer+EntryFilesStartIndex, (i32)DirectoryEntriesBufferIndex-EntryFilesStartIndex, &InternalEntryCompareName);
-	}
+	u32 DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
+	SortDirectoryEntries(DirectoryEntriesBuffer, DirectoryEntriesBufferIndex);
 	
 	// NOTE(Felix): Prepare for drawing
 	EchoDisable();
-	ScreenClear();
 	CursorHide();
-	CursorMove(0, 0);
 
 	// NOTE(Felix): Get Console dimensions
 	i32 ConsoleRows = 0;
@@ -310,25 +498,22 @@ main(void)
 	i32 CurrentIndex = 0;
 	while (0 == ExitProgram)
 	{
+		ColorResetToDefault();
+		ScreenClear();
+
 		// NOTE(Felix): Print all valid entries
 		for (u32 InternalEntryIndex = 0;
 		     InternalEntryIndex < DirectoryEntriesBufferIndex;
 		     ++InternalEntryIndex)
 		{
+			internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[InternalEntryIndex];
 			CursorMove((i32)InternalEntryIndex, 0);
-
-			// NOTE(Felix): Highlight line
-			if ((i32)InternalEntryIndex == CurrentIndex)
-			{
-				fprintf(stderr, "\033[30;47m");
-			}
-			else
-			{
-				fprintf(stderr, "\033[37;40m");
-			}
-
+			
+			color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == CurrentIndex);
+			ColorSet(LineColor);
 			ClearCurrentLine();
-			fprintf(stderr, "%s", DirectoryEntriesBuffer[InternalEntryIndex].Name);
+
+			fprintf(stderr, "%s", CurrentEntry.Name);
 		}
 		
 		// NOTE(Felix): Process input
@@ -337,17 +522,51 @@ main(void)
 		{
 			// NOTE(Felix): Move down
 			case 'j': {
+				// TODO(Felix): Scrolling
 				CurrentIndex = MIN((i32)DirectoryEntriesBufferIndex-1, CurrentIndex+1);
 			} break;
 			
 			// NOTE(Felix): Move Up
 			case 'k': {
-
+				// TODO(Felix): Scrolling
 				CurrentIndex = MAX(0, CurrentIndex-1);
 			} break;
 			
-			// TODO(Felix): Open file
+			// TODO(Felix): Leave directory
+			case 'h': {
+				// NOTE(Felix): Make sure we're not in the "root directory"
+				if (0 == (PathBuffer[0] == '/' && PathBuffer[1] == 0))
+				{
+					// NOTE(Felix): We want to automatically select the folder we just left
+					char PreviousDirectoryStringBuffer[50] = { 0 };
+					ReadCurrentDirectoryNameIntoBuffer(PreviousDirectoryStringBuffer, PathBuffer);
+					LeaveDirectory(PathBuffer);
+					DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
+					CurrentIndex = DirectoryGetIndexFromName(DirectoryEntriesBuffer, PreviousDirectoryStringBuffer);
+					ScreenClear();
+				}
+			} break;
+			
+			// NOTE(Felix): Open file or enter directory
 			case 'l': {
+				internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[CurrentIndex];
+				switch (CurrentEntry.Type)
+				{
+					case ENTRY_TYPE_FILE: {
+						// TODO(Felix): 
+					} break;
+
+					case ENTRY_TYPE_DIRECTORY: {
+						DirectoryEnter(PathBuffer, CurrentEntry.Name);
+						DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
+						CurrentIndex = 0;
+						ScreenClear();
+					} break;
+
+					default: {
+						// noop
+					} break;
+				}
 			} break;
 			
 			// NOTE(Felix): Exit program
@@ -362,12 +581,8 @@ main(void)
 		}
 	}
 
-	// NOTE(Felix): Cleanup
-	fprintf(stderr, "\033[37;40m");
-	ScreenClear();
-	EchoEnable();
-	CursorShow();
-	CursorMove(0, 0);
+	// NOTE(Felix): Shutdown
+	CleanUpConsole();
 	munmap(DirectoryEntriesBuffer, DirectoryEntriesBufferSize);
 	return (0);
 }
