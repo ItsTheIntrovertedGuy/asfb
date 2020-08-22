@@ -24,6 +24,8 @@
 
 // TODO(Felix): Maybe pull these console ANSI functions out into its include file
 
+#define SCROLL_OFF 5
+
 typedef struct 
 {
 	char *FileEnding;
@@ -43,6 +45,8 @@ global_variable file_type_config GLOBALFileTypeConfig[] = {
 	{ ".gif",    "/bin/feh" },
 
 	{ ".mp4",    "/bin/mpv" },
+	{ ".mkv",    "/bin/mpv" },
+	{ ".avi",    "/bin/mpv" },
 };
 
 
@@ -174,7 +178,7 @@ ReadCurrentDirectoryNameIntoBuffer(char *BufferToReadInto, char *PathBuffer)
 	}
 	
 	// NOTE(Felix): Read String inbetween slashes into Buffer
-	if (LastSlashIndex != 0 && SecondLastSlashIndex != 0)
+	if (LastSlashIndex != 0)
 	{
 		i32 Index = 0;
 		for (; SecondLastSlashIndex+Index+1 != LastSlashIndex; ++Index)
@@ -201,7 +205,7 @@ LeaveDirectory(char *PathBuffer)
 	}
 	
 	// NOTE(Felix): End string after second last slash
-	if (SecondLastSlashIndex != 0 && LastSlashIndex != 0)
+	if (LastSlashIndex != 0)
 	{
 		PathBuffer[SecondLastSlashIndex+1] = 0;
 	}
@@ -416,7 +420,8 @@ internal internal_directory_entry
 CreateInternalEntryFromDirent(struct dirent *Entry)
 {
 	internal_directory_entry Result = { 0 };
-	MemoryCopy(&Result.Name, Entry->d_name, sizeof(Entry->d_name));
+	Result.NameLength = (i32)StringLength(Entry->d_name);
+	MemoryCopy(&Result.Name, Entry->d_name, (u32)Result.NameLength);
 	Result.NameLength = (i32)StringLength(Result.Name);
 	switch (Entry->d_type)
 	{
@@ -464,7 +469,16 @@ SortDirectoryEntries(internal_directory_entry *Buffer, u32 Count)
 
 	// NOTE(Felix): Find end of directory / start of files and sort each sublist by name
 	i32 EntryFilesStartIndex = 0;
-	for (; Buffer[EntryFilesStartIndex].Type != ENTRY_TYPE_FILE; ++EntryFilesStartIndex) {  }
+	for (; 
+		 (Buffer[EntryFilesStartIndex].Type != ENTRY_TYPE_FILE) && (EntryFilesStartIndex < (i32)Count); 
+		 ++EntryFilesStartIndex) {  }
+	if (EntryFilesStartIndex == (i32)Count)
+	{
+		EntryFilesStartIndex = 0;
+	}
+	else
+	{
+	}
 
 	InternalEntryListSort(Buffer, EntryFilesStartIndex, &InternalEntryCompareName);
 	InternalEntryListSort(Buffer+EntryFilesStartIndex, (i32)Count-EntryFilesStartIndex, &InternalEntryCompareName);
@@ -483,7 +497,6 @@ DirectoryReadIntoBuffer(internal_directory_entry *Buffer, char *DirectoryPath)
 	{
 		if (DirentPassesFilter(DirectoryEntry))
 		{
-			//DirectoryEntryPrint(DirectoryEntry);
 			internal_directory_entry InternalEntry = CreateInternalEntryFromDirent(DirectoryEntry);
 			Buffer[EntryCount] = InternalEntry;
 			EntryCount++;
@@ -540,6 +553,34 @@ ConsoleCleanup(void)
 	CursorMove(0, 0);
 }
 
+internal i32
+CalculateStartDrawIndex(i32 NumberOfEntries, i32 SelectedIndex, i32 ConsoleRows)
+{
+	i32 StartDrawIndex = 0;
+	if (SelectedIndex < ConsoleRows - SCROLL_OFF)
+	{
+		StartDrawIndex = 0;
+	}
+	else if (SelectedIndex >= NumberOfEntries - ConsoleRows + SCROLL_OFF)
+	{
+		StartDrawIndex = NumberOfEntries - ConsoleRows;
+	}
+	else
+	{
+		StartDrawIndex = SelectedIndex - (ConsoleRows/2);
+	}
+	return (StartDrawIndex);
+}
+
+internal void
+ConsoleUpdateDimensions(i32 *ConsoleRows, i32 *ConsoleColumns)
+{
+	struct winsize ConsoleDimensions = { 0 };
+	ioctl(STDOUT_FILENO, TIOCGWINSZ, &ConsoleDimensions);
+	*ConsoleRows = ConsoleDimensions.ws_row;
+	*ConsoleColumns = ConsoleDimensions.ws_col;
+}
+
 internal void
 SignalSIGINTHandler(int Signal)
 {
@@ -564,14 +605,11 @@ main(void)
 	}
 	
 	// NOTE(Felix): Handle resize signal so we can reformat the window
-#if 0
-	// Unused at the moment as it we don't even have scrolling
 	{
 		struct sigaction SignalAction = { 0 };
 		SignalAction.sa_handler = &SignalSIGWINCHHandler;
 		sigaction(SIGWINCH, &SignalAction, 0);
 	}
-#endif
 	
 	// NOTE(Felix): Disable buffering of input, we want to process it immediately
 	{
@@ -598,30 +636,24 @@ main(void)
 	// NOTE(Felix): Get Console dimensions
 	i32 ConsoleRows = 0;
 	i32 ConsoleColumns = 0;
-	{
-		struct winsize ConsoleDimensions = { 0 };
-		ioctl(STDOUT_FILENO, TIOCGWINSZ, &ConsoleDimensions);
-		ConsoleRows = ConsoleDimensions.ws_row;
-		ConsoleColumns = ConsoleDimensions.ws_col;
-	}
-	(void)ConsoleRows;
-	(void)ConsoleColumns;
+	ConsoleUpdateDimensions(&ConsoleRows, &ConsoleColumns);
 
 	// NOTE(Felix): Draw
 	b32 ExitProgram = 0;
-	i32 SelectedIndex = 1;
+	i32 SelectedIndex = 0;
+	i32 StartDrawIndex = 0;
 	while (0 == ExitProgram)
 	{
 		ColorResetToDefault();
 		ScreenClear();
 
 		// NOTE(Felix): Print all valid entries
-		for (u32 InternalEntryIndex = 0;
-		     InternalEntryIndex < DirectoryEntriesBufferIndex;
+		for (i32 InternalEntryIndex = StartDrawIndex;
+		     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)DirectoryEntriesBufferIndex);
 		     ++InternalEntryIndex)
 		{
 			internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[InternalEntryIndex];
-			CursorMove((i32)InternalEntryIndex, 0);
+			CursorMove((i32)InternalEntryIndex-StartDrawIndex, 0);
 			
 			color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
 			ColorSet(LineColor);
@@ -630,13 +662,8 @@ main(void)
 			fprintf(stderr, "%s", CurrentEntry.Name);
 		}
 		
+		
 		// NOTE(Felix): Process input
-#if 1
-		int InputCharacter = 0;
-		read(STDIN_FILENO, &InputCharacter, sizeof(InputCharacter));
-#else
-		// NOTE(Felix): At the moment, this is useless.
-		// if we actually format the window properly, this may come in handy in the future
 		int InputCharacter = 0;
 		{
 			struct pollfd PollRequest = { 0 };
@@ -651,32 +678,38 @@ main(void)
 			
 			if (GLOBALUpdateConsoleDimensions)
 			{
-				// TODO(Felix): Maybe pullout into function
-				struct winsize ConsoleDimensions = { 0 };
-				ioctl(STDOUT_FILENO, TIOCGWINSZ, &ConsoleDimensions);
-				ConsoleRows = ConsoleDimensions.ws_row;
-				ConsoleColumns = ConsoleDimensions.ws_col;
+				// NOTE(Felix): Update Dimensions and force redraw
+				ConsoleUpdateDimensions(&ConsoleRows, &ConsoleColumns);
 				GLOBALUpdateConsoleDimensions = 0;
-				
-				// NOTE(Felix): Force redraw
 				continue;
 			}
 			
 			read(STDIN_FILENO, &InputCharacter, sizeof(InputCharacter));
 		}
-#endif
+
 		switch (InputCharacter)
 		{
 			// NOTE(Felix): Move down
 			case 'j': {
-				// TODO(Felix): Scrolling
 				SelectedIndex = MIN((i32)DirectoryEntriesBufferIndex-1, SelectedIndex+1);
+				
+				// NOTE(Felix): Scrolling
+				if (SelectedIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
+					SelectedIndex + SCROLL_OFF < (i32)DirectoryEntriesBufferIndex) // Only scroll if not all entries are displayed
+				{
+					StartDrawIndex++;
+				}
 			} break;
 			
 			// NOTE(Felix): Move Up
 			case 'k': {
-				// TODO(Felix): Scrolling
 				SelectedIndex = MAX(0, SelectedIndex-1);
+				
+				// NOTE(Felix): Scrolling
+				if (SelectedIndex - StartDrawIndex <= SCROLL_OFF)
+				{
+					StartDrawIndex = MAX(StartDrawIndex-1, 0);
+				}
 			} break;
 			
 			// NOTE(Felix): Leave directory
@@ -691,6 +724,9 @@ main(void)
 					DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
 					SelectedIndex = DirectoryGetIndexFromName(DirectoryEntriesBuffer, PreviousDirectoryStringBuffer);
 					ScreenClear();
+					
+					// NOTE(Felix): Center selection
+					StartDrawIndex = CalculateStartDrawIndex((i32)DirectoryEntriesBufferIndex, SelectedIndex, ConsoleRows);
 				}
 			} break;
 			
@@ -750,6 +786,7 @@ main(void)
 						DirectoryEnter(PathBuffer, CurrentEntry.Name);
 						DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
 						SelectedIndex = 0;
+						StartDrawIndex = CalculateStartDrawIndex((i32)DirectoryEntriesBufferIndex, SelectedIndex, ConsoleRows);
 						ScreenClear();
 					} break;
 
