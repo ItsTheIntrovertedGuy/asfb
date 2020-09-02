@@ -267,7 +267,7 @@ LineColorGetFromEntry(internal_directory_entry Entry, b32 EntrySelected)
 internal void
 ColorSet(color Color)
 {
-	fprintf(stderr, "\033[%d;%dm", Color.Background, Color.Foreground);
+	printf("\033[%d;%dm", Color.Background, Color.Foreground);
 }
 
 internal void
@@ -283,13 +283,13 @@ ColorResetToDefault()
 internal void
 ScreenClear(void)
 {
-	fprintf(stderr, "\033[2J");
+	printf("\033[2J");
 }
 
 internal void
 ClearCurrentLine(void)
 {
-	fprintf(stderr, "\033[2K");
+	printf("\033[2K");
 }
 
 internal void
@@ -313,32 +313,30 @@ EchoEnable(void)
 internal void
 CursorHide(void)
 {
-	fprintf(stderr, "\033[?25l");
+	printf("\033[?25l");
 }
 
 internal void
 CursorShow(void)
 {
-	fprintf(stderr, "\033[?25h");
+	printf("\033[?25h");
 }
 
 internal void
 CursorMove(i32 Y, i32 X)
 {
 	// NOTE(Felix): This function is zero indexed, ANSI escape sequences apparently aren't though
-	char Buffer[20] = { 0 };
-	i32 CharactersToWrite = snprintf(Buffer, sizeof(Buffer), "\033[%d;%dH", Y+1, X+1);
-	write(STDOUT_FILENO, Buffer, (size_t)CharactersToWrite);
+	printf("\033[%d;%dH", Y+1, X+1);
 }
 
 internal void
 DirectoryEntryPrint(struct dirent *DirectoryEntry)
 {
-	fprintf(stderr, "d_ino:    %ld\n",  DirectoryEntry->d_ino);
-	fprintf(stderr, "d_off:    %ld\n",  DirectoryEntry->d_off);
-	fprintf(stderr, "d_reclen: %d\n",   DirectoryEntry->d_reclen);
-	fprintf(stderr, "d_type:   %d\n",   DirectoryEntry->d_type);
-	fprintf(stderr, "d_name:   %s\n\n", DirectoryEntry->d_name);
+	printf("d_ino:    %ld\n",  DirectoryEntry->d_ino);
+	printf("d_off:    %ld\n",  DirectoryEntry->d_off);
+	printf("d_reclen: %d\n",   DirectoryEntry->d_reclen);
+	printf("d_type:   %d\n",   DirectoryEntry->d_type);
+	printf("d_name:   %s\n\n", DirectoryEntry->d_name);
 }
 
 internal b32
@@ -412,8 +410,8 @@ InternalEntryPrint(internal_directory_entry Entry)
 		} break;
 	}
 
-	fprintf(stderr, "Name: %s\n",   Entry.Name);
-	fprintf(stderr, "Type: %s\n\n", TypeString);
+	printf("Name: %s\n",   Entry.Name);
+	printf("Type: %s\n\n", TypeString);
 }
 
 internal internal_directory_entry
@@ -597,6 +595,9 @@ SignalSIGWINCHHandler(int Signal)
 int
 main(void)
 {
+	// NOTE(Felix): Disable printf stdout buffering
+	setvbuf(stdout, 0, _IONBF, 0);
+
 	// NOTE(Felix): Set signal so a CTRL-C restores console settings
 	{
 		struct sigaction SignalAction = { 0 };
@@ -647,19 +648,32 @@ main(void)
 		ColorResetToDefault();
 		ScreenClear();
 
-		// NOTE(Felix): Print all valid entries
-		for (i32 InternalEntryIndex = StartDrawIndex;
-		     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)DirectoryEntriesBufferIndex);
-		     ++InternalEntryIndex)
+		if (DirectoryEntriesBufferIndex > 0)
 		{
-			internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[InternalEntryIndex];
-			CursorMove((i32)InternalEntryIndex-StartDrawIndex, 0);
-			
-			color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
+			// NOTE(Felix): Print all valid entries
+			for (i32 InternalEntryIndex = StartDrawIndex;
+			     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)DirectoryEntriesBufferIndex);
+			     ++InternalEntryIndex)
+			{
+				internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[InternalEntryIndex];
+				CursorMove((i32)InternalEntryIndex-StartDrawIndex, 0);
+
+				color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
+				ColorSet(LineColor);
+				ClearCurrentLine();
+				printf("%s\n", CurrentEntry.Name);
+			}
+		}
+		else
+		{
+			// NOTE(Felix): Display that this directory is empty
+			CursorMove(0, 0);
+			color LineColor = { 0 };
+			LineColor.Background = COLOR_DEFAULT_BACKGROUND;
+			LineColor.Foreground = COLOR_UNSELECTED_FOREGROUND_DIRECTORY;
 			ColorSet(LineColor);
 			ClearCurrentLine();
-
-			fprintf(stderr, "%s", CurrentEntry.Name);
+			printf("<empty>\n");
 		}
 		
 		
@@ -670,11 +684,19 @@ main(void)
 			PollRequest.fd = STDIN_FILENO;
 			PollRequest.events = POLLIN;
 
+#if 0
+			// NOTE(Felix): In 500ms intervall
 			while (0 == PollRequest.revents &&
 				   0 == GLOBALUpdateConsoleDimensions)
 			{
 				poll(&PollRequest, 1, 500);
 			}
+#else
+			// NOTE(Felix): Wait for either
+			//  - Buffered Input
+			//  - Interrupt of any kind (including resizing of console)
+			poll(&PollRequest, 1, -1);
+#endif
 			
 			if (GLOBALUpdateConsoleDimensions)
 			{
@@ -754,7 +776,6 @@ main(void)
 						{
 							file_type_config ProgramToUseConfig = GetProgramToUseConfig(CurrentEntry.Name);
 							char *ProgramName = GetProgramNameFromFullPath(ProgramToUseConfig.PathToProgram);
-							fprintf(stderr, "\n%s\n%s\n%s\n%s\n", CurrentEntry.Name, ProgramToUseConfig.PathToProgram, ProgramName, PathBuffer);
 
 							ConsoleCleanup();
 							pid_t ChildProcessID = fork();
