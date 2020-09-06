@@ -661,7 +661,7 @@ main(void)
 				color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
 				ColorSet(LineColor);
 				ClearCurrentLine();
-				printf("%s\n", CurrentEntry.Name);
+				printf("%s", CurrentEntry.Name);
 			}
 		}
 		else
@@ -673,7 +673,7 @@ main(void)
 			LineColor.Foreground = COLOR_UNSELECTED_FOREGROUND_DIRECTORY;
 			ColorSet(LineColor);
 			ClearCurrentLine();
-			printf("<empty>\n");
+			printf("<empty>");
 		}
 		
 		
