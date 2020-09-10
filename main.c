@@ -25,6 +25,12 @@
 // "chdir":    Change current working directory
 // TODO(Felix): Maybe pull these console ANSI functions out into its include file
 
+// TODO(Felix): Known Bugs:
+// Resizing the window sometimes yeets current selection into the shadow realm
+
+// TODO(Felix): A few features we may want to implement:
+// "h" - toggle hidden items
+// "/" - search / filter within directories
 
 global_variable b32 GLOBALUpdateConsoleDimensions = 0;
 
