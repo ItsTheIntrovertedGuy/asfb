@@ -15,90 +15,19 @@
 #include <errno.h>
 
 #include "language_layer.h"
+#include "main.h"
+#include "config.h"
 
 // NOTE(Felix): Resources:
 // "execl":    To start a program to edit the file
 // "dirent.h": Directory stuff
 // "getcwd":   Get full path to working directory
 // "chdir":    Change current working directory
-
 // TODO(Felix): Maybe pull these console ANSI functions out into its include file
-
-#define SCROLL_OFF 5
-
-typedef struct 
-{
-	char *FileEnding;
-	char *PathToProgram;
-	b32 IsConsoleApplication;
-} file_type_config;
-
-global_variable file_type_config GLOBALFileTypeConfig[] = {
-	{ "",        "/bin/nvim", 1 }, // NOTE(Felix): Default
-
-	{ ".pdf",    "/bin/zathura" },
-	{ ".djvu",   "/bin/zathura" },
-
-	{ ".png",    "/bin/feh" },
-	{ ".jpeg",   "/bin/feh" },
-	{ ".jpg",    "/bin/feh" },
-	{ ".gif",    "/bin/feh" },
-
-	{ ".mp4",    "/bin/mpv" },
-	{ ".mkv",    "/bin/mpv" },
-	{ ".avi",    "/bin/mpv" },
-};
 
 
 global_variable b32 GLOBALUpdateConsoleDimensions = 0;
 
-typedef enum 
-{
-	// NOTE(Felix): Magic ANSI constants
-	// http://ascii-table.com/ansi-escape-sequences.php
-	COLOR_DEFAULT_BACKGROUND              = 40,
-	COLOR_DEFAULT_FOREGROUND              = 37,
-
-	COLOR_UNSELECTED_BACKGROUND           = 40,
-	COLOR_UNSELECTED_FOREGROUND_FILE      = 37,
-	COLOR_UNSELECTED_FOREGROUND_DIRECTORY = 34,
-
-	COLOR_SELECTED_BACKGROUND_FILE        = 47,
-	COLOR_SELECTED_BACKGROUND_DIRECTORY   = 44,
-	COLOR_SELECTED_FOREGROUND             = 30,
-} ansi_color_code;
-
-typedef struct 
-{
-	ansi_color_code Background;
-	ansi_color_code Foreground;
-} color;
-
-typedef struct
-{
-	char Name[256];
-	i32 NameLength;
-	//u64 Size;
-	enum { 
-		ENTRY_TYPE_DIRECTORY,
-		ENTRY_TYPE_FILE,
-		ENTRY_TYPE_UNKNOWN, 
-	} Type;
-} internal_directory_entry;
-
-internal b32
-StringEqual(char *A, char *B)
-{
-	i32 Index = 0;
-	for (; 
-		 A[Index] == B[Index] && A[Index] != 0 && B[Index] != 0;
-		++Index)
-	{
-		// noop
-	}
-	
-	return (A[Index] == B[Index]);
-}
 
 internal char *
 GetProgramNameFromFullPath(char *FullPath)
@@ -782,7 +711,7 @@ main(void)
 							if (0 == ChildProcessID)
 							{
 								// NOTE(Felix): This is the child process
-								if (ProgramToUseConfig.IsConsoleApplication)
+								if (0 == ProgramToUseConfig.IsConsoleApplication)
 								{
 									// NOTE(Felix): Unlink from parent
 									setsid();
@@ -792,7 +721,6 @@ main(void)
 							else
 							{
 								// NOTE(Felix): This is the parent process
-
 								if (ProgramToUseConfig.IsConsoleApplication)
 								{
 									// NOTE(Felix): Wait for child to finish, as it is using the console drawing 
