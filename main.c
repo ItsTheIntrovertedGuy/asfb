@@ -528,7 +528,7 @@ SignalSIGWINCHHandler(int Signal)
 }
 
 int
-main(void)
+main(i32 ArgumentCount, char **Arguments)
 {
 	// NOTE(Felix): Disable printf stdout buffering
 	setvbuf(stdout, 0, _IONBF, 0);
@@ -554,6 +554,14 @@ main(void)
 		TerminalSettings.c_lflag &= (tcflag_t)~ICANON;
 		tcsetattr(STDIN_FILENO, TCSANOW, &TerminalSettings);
 	}
+	
+	// NOTE(Felix): The user is able to pass a path as an argument - we'll just try to enter this directory
+	// if it doesn't work we stay in the current directory
+	// We'll also just use the first argument (after the program name itself)
+	if (ArgumentCount >= 2) // First argument is program name itself
+	{
+		chdir(Arguments[1]);
+	}
 
 	// NOTE(Felix): Get current directory string and format properly
 	char PathBuffer[PATH_MAX] = { 0 };
@@ -561,10 +569,10 @@ main(void)
 	PathBuffer[(i32)StringLength(PathBuffer)] = '/';
 
 	// NOTE(Felix): Create and fill buffer that holds contents of current directory
-	u32 DirectoryEntriesBufferSize = MEBIBYTES(1);
-	internal_directory_entry *DirectoryEntriesBuffer = mmap(0, DirectoryEntriesBufferSize, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	u32 DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
-	SortDirectoryEntries(DirectoryEntriesBuffer, DirectoryEntriesBufferIndex);
+	u32 CurrentDirectoryEntriesBufferSize = MEBIBYTES(1);
+	internal_directory_entry *CurrentDirectoryEntriesBuffer = mmap(0, CurrentDirectoryEntriesBufferSize, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	u32 CurrentDirectoryEntryCount = DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer);
+	SortDirectoryEntries(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
 	
 	// NOTE(Felix): Prepare for drawing
 	ConsoleSetup();
@@ -583,14 +591,14 @@ main(void)
 		ColorResetToDefault();
 		ScreenClear();
 
-		if (DirectoryEntriesBufferIndex > 0)
+		if (CurrentDirectoryEntryCount > 0)
 		{
 			// NOTE(Felix): Print all valid entries
 			for (i32 InternalEntryIndex = StartDrawIndex;
-			     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)DirectoryEntriesBufferIndex);
+			     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)CurrentDirectoryEntryCount);
 			     ++InternalEntryIndex)
 			{
-				internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[InternalEntryIndex];
+				internal_directory_entry CurrentEntry = CurrentDirectoryEntriesBuffer[InternalEntryIndex];
 				CursorMove((i32)InternalEntryIndex-StartDrawIndex, 0);
 
 				color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
@@ -648,11 +656,11 @@ main(void)
 		{
 			// NOTE(Felix): Move down
 			case 'j': {
-				SelectedIndex = MIN((i32)DirectoryEntriesBufferIndex-1, SelectedIndex+1);
+				SelectedIndex = MIN((i32)CurrentDirectoryEntryCount-1, SelectedIndex+1);
 				
 				// NOTE(Felix): Scrolling
 				if (SelectedIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
-					SelectedIndex + SCROLL_OFF < (i32)DirectoryEntriesBufferIndex) // Only scroll if not all entries are displayed
+					SelectedIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
 				{
 					StartDrawIndex++;
 				}
@@ -678,18 +686,18 @@ main(void)
 					char PreviousDirectoryStringBuffer[50] = { 0 };
 					ReadCurrentDirectoryNameIntoBuffer(PreviousDirectoryStringBuffer, PathBuffer);
 					LeaveDirectory(PathBuffer);
-					DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
-					SelectedIndex = DirectoryGetIndexFromName(DirectoryEntriesBuffer, PreviousDirectoryStringBuffer);
+					CurrentDirectoryEntryCount = DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer);
+					SelectedIndex = DirectoryGetIndexFromName(CurrentDirectoryEntriesBuffer, PreviousDirectoryStringBuffer);
 					ScreenClear();
 					
 					// NOTE(Felix): Center selection
-					StartDrawIndex = CalculateStartDrawIndex((i32)DirectoryEntriesBufferIndex, SelectedIndex, ConsoleRows);
+					StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 				}
 			} break;
 			
 			// NOTE(Felix): Open file or enter directory
 			case 'l': {
-				internal_directory_entry CurrentEntry = DirectoryEntriesBuffer[SelectedIndex];
+				internal_directory_entry CurrentEntry = CurrentDirectoryEntriesBuffer[SelectedIndex];
 				switch (CurrentEntry.Type)
 				{
 					case ENTRY_TYPE_FILE: {
@@ -739,9 +747,9 @@ main(void)
 
 					case ENTRY_TYPE_DIRECTORY: {
 						DirectoryEnter(PathBuffer, CurrentEntry.Name);
-						DirectoryEntriesBufferIndex = DirectoryReadIntoBuffer(DirectoryEntriesBuffer, PathBuffer);
+						CurrentDirectoryEntryCount = DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer);
 						SelectedIndex = 0;
-						StartDrawIndex = CalculateStartDrawIndex((i32)DirectoryEntriesBufferIndex, SelectedIndex, ConsoleRows);
+						StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 						ScreenClear();
 					} break;
 
@@ -765,6 +773,6 @@ main(void)
 
 	// NOTE(Felix): Shutdown
 	ConsoleCleanup();
-	munmap(DirectoryEntriesBuffer, DirectoryEntriesBufferSize);
+	munmap(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntriesBufferSize);
 	return (0);
 }
