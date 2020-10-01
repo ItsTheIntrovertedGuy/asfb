@@ -29,10 +29,13 @@
 // Resizing the window sometimes yeets current selection into the shadow realm
 
 // TODO(Felix): A few features we may want to implement:
-// "h" - toggle hidden items
-// "/" - search / filter within directories
+// "/"   - search / filter within directories
+// "C-F" - skip a "page" (one terminal height of entries)
+// Some kind of mechanism that doesn't make our program crash if we don't have enough memory
+//   to hold all directory entries at once
 
 global_variable b32 GLOBALUpdateConsoleDimensions = 0;
+global_variable b32 GLOBALFilterHiddenItems = 0;
 
 
 internal char *
@@ -392,6 +395,12 @@ DirentPassesFilter(struct dirent *Entry)
 		return (0);
 	}
 	
+	// NOTE(Felix): Additional filter: Hidden items (any entry starting with ".")
+	if (GLOBALFilterHiddenItems && Entry->d_name[0] == '.')
+	{ 
+		return (0);
+	}
+	
 	return (1);
 }
 
@@ -404,7 +413,10 @@ SortDirectoryEntries(internal_directory_entry *Buffer, u32 Count)
 	i32 EntryFilesStartIndex = 0;
 	for (; 
 		 (Buffer[EntryFilesStartIndex].Type != ENTRY_TYPE_FILE) && (EntryFilesStartIndex < (i32)Count); 
-		 ++EntryFilesStartIndex) {  }
+		 ++EntryFilesStartIndex) 
+	{ 
+		// noop;
+	}
 	if (EntryFilesStartIndex == (i32)Count)
 	{
 		EntryFilesStartIndex = 0;
@@ -417,40 +429,44 @@ SortDirectoryEntries(internal_directory_entry *Buffer, u32 Count)
 	InternalEntryListSort(Buffer+EntryFilesStartIndex, (i32)Count-EntryFilesStartIndex, &InternalEntryCompareName);
 }
 
-internal u32
-DirectoryReadIntoBuffer(internal_directory_entry *Buffer, char *DirectoryPath)
+internal void
+DirectoryReadIntoBuffer(internal_directory_entry *Buffer, char *DirectoryPath, u32 *EntryCount)
 {
 	// NOTE(Felix): Open directory stream
 	DIR *DirectoryStream = opendir(DirectoryPath);
 	
 	// NOTE(Felix): Gather and store all valid entries
 	struct dirent *DirectoryEntry = readdir(DirectoryStream);
-	u32 EntryCount = 0;
+	u32 EntryCountResult = 0;
 	while (DirectoryEntry != 0)
 	{
 		if (DirentPassesFilter(DirectoryEntry))
 		{
 			internal_directory_entry InternalEntry = CreateInternalEntryFromDirent(DirectoryEntry);
-			Buffer[EntryCount] = InternalEntry;
-			EntryCount++;
+			Buffer[EntryCountResult] = InternalEntry;
+			EntryCountResult++;
 		}
 		DirectoryEntry = readdir(DirectoryStream);
 	}
 	closedir(DirectoryStream);
 	
-	SortDirectoryEntries(Buffer, EntryCount);
-	return (EntryCount);
+	SortDirectoryEntries(Buffer, EntryCountResult);
+	*EntryCount = EntryCountResult;
 }
 
 internal i32
-DirectoryGetIndexFromName(internal_directory_entry *Buffer, char *EntryName)
+DirectoryGetIndexFromName(internal_directory_entry *Buffer, u32 EntryCount, char *EntryName)
 {
-	i32 Index = 0;
-	while (0 == StringEqual(Buffer[Index].Name, EntryName))
+	for (i32 Index = 0;
+		 Index < (i32)EntryCount;
+		 ++Index)
 	{
-		++Index;
+		if (StringEqual(Buffer[Index].Name, EntryName))
+		{
+			return (Index);
+		}
 	}
-	return (Index);
+	return (0);
 }
 
 internal void
@@ -503,6 +519,15 @@ CalculateStartDrawIndex(i32 NumberOfEntries, i32 SelectedIndex, i32 ConsoleRows)
 		StartDrawIndex = SelectedIndex - (ConsoleRows/2);
 	}
 	return (StartDrawIndex);
+}
+
+internal void
+RefreshCurrentDirectory(internal_directory_entry *EntriesBuffer, u32 *EntryCount, i32 *SelectedIndex, char *PathBuffer)
+{
+	// NOTE(Felix): Refresh directory by saving current name, reloading directory and finding the name we saved
+	internal_directory_entry SelectedEntry = EntriesBuffer[*SelectedIndex];
+	DirectoryReadIntoBuffer(EntriesBuffer, PathBuffer, EntryCount);
+	*SelectedIndex = DirectoryGetIndexFromName(EntriesBuffer, *EntryCount, SelectedEntry.Name);
 }
 
 internal void
@@ -569,9 +594,10 @@ main(i32 ArgumentCount, char **Arguments)
 	PathBuffer[(i32)StringLength(PathBuffer)] = '/';
 
 	// NOTE(Felix): Create and fill buffer that holds contents of current directory
-	u32 CurrentDirectoryEntriesBufferSize = MEBIBYTES(1);
+	u32 CurrentDirectoryEntriesBufferSize = MEBIBYTES(2);
 	internal_directory_entry *CurrentDirectoryEntriesBuffer = mmap(0, CurrentDirectoryEntriesBufferSize, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	u32 CurrentDirectoryEntryCount = DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer);
+	u32 CurrentDirectoryEntryCount = 0;
+	DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer, &CurrentDirectoryEntryCount);
 	SortDirectoryEntries(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
 	
 	// NOTE(Felix): Prepare for drawing
@@ -683,12 +709,11 @@ main(i32 ArgumentCount, char **Arguments)
 				if (0 == (PathBuffer[0] == '/' && PathBuffer[1] == 0))
 				{
 					// NOTE(Felix): We want to automatically select the folder we just left
-					char PreviousDirectoryStringBuffer[50] = { 0 };
+					char PreviousDirectoryStringBuffer[PATH_MAX] = { 0 };
 					ReadCurrentDirectoryNameIntoBuffer(PreviousDirectoryStringBuffer, PathBuffer);
 					LeaveDirectory(PathBuffer);
-					CurrentDirectoryEntryCount = DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer);
-					SelectedIndex = DirectoryGetIndexFromName(CurrentDirectoryEntriesBuffer, PreviousDirectoryStringBuffer);
-					ScreenClear();
+					DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer, &CurrentDirectoryEntryCount);
+					SelectedIndex = DirectoryGetIndexFromName(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount, PreviousDirectoryStringBuffer);
 					
 					// NOTE(Felix): Center selection
 					StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
@@ -747,10 +772,9 @@ main(i32 ArgumentCount, char **Arguments)
 
 					case ENTRY_TYPE_DIRECTORY: {
 						DirectoryEnter(PathBuffer, CurrentEntry.Name);
-						CurrentDirectoryEntryCount = DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer);
+						DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer, &CurrentDirectoryEntryCount);
 						SelectedIndex = 0;
 						StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
-						ScreenClear();
 					} break;
 
 					default: {
@@ -758,7 +782,18 @@ main(i32 ArgumentCount, char **Arguments)
 					} break;
 				}
 			} break;
+
+			// NOTE(Felix): Toggle hidden files 
+			case 't': {
+				GLOBALFilterHiddenItems = !GLOBALFilterHiddenItems;
+				RefreshCurrentDirectory(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, &SelectedIndex, PathBuffer);
+			} break;
 			
+			// NOTE(Felix): Force refresh
+			case 'r': {
+				RefreshCurrentDirectory(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, &SelectedIndex, PathBuffer);
+			} break;
+
 			// NOTE(Felix): Exit program
 			case 'q': {
 				ExitProgram = 1;
