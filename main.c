@@ -29,10 +29,10 @@
 // Resizing the window sometimes yeets current selection into the shadow realm
 
 // TODO(Felix): A few features we may want to implement:
-// "/"   - search / filter within directories
-// "C-F" - skip a "page" (one terminal height of entries)
-// Some kind of mechanism that doesn't make our program crash if we don't have enough memory
-//   to hold all directory entries at once
+// - "/"   - search / filter within directories
+// - "C-F" - skip a "page" (one terminal height of entries)
+// - Some kind of mechanism that doesn't make our program crash if we don't have enough memory
+//     to hold all directory entries at once
 
 global_variable b32 GLOBALUpdateConsoleDimensions = 0;
 global_variable b32 GLOBALFilterHiddenItems = 0;
@@ -404,27 +404,26 @@ DirentPassesFilter(struct dirent *Entry)
 	return (1);
 }
 
+internal i32
+DirectoryGetFirstFileEntryIndex(internal_directory_entry *Buffer, u32 Count)
+{
+	i32 ResultIndex = 0;
+	for (; 
+		 (Buffer[ResultIndex].Type != ENTRY_TYPE_FILE) && (ResultIndex+1 < (i32)Count); 
+		 ++ResultIndex) 
+	{ 
+		// noop;
+	}
+	return (ResultIndex);
+}
+
 internal void
 SortDirectoryEntries(internal_directory_entry *Buffer, u32 Count)
 {
 	InternalEntryListSort(Buffer, (i32)Count, &InternalEntryCompareType);
 
 	// NOTE(Felix): Find end of directory / start of files and sort each sublist by name
-	i32 EntryFilesStartIndex = 0;
-	for (; 
-		 (Buffer[EntryFilesStartIndex].Type != ENTRY_TYPE_FILE) && (EntryFilesStartIndex < (i32)Count); 
-		 ++EntryFilesStartIndex) 
-	{ 
-		// noop;
-	}
-	if (EntryFilesStartIndex == (i32)Count)
-	{
-		EntryFilesStartIndex = 0;
-	}
-	else
-	{
-	}
-
+	i32 EntryFilesStartIndex = DirectoryGetFirstFileEntryIndex(Buffer, Count);
 	InternalEntryListSort(Buffer, EntryFilesStartIndex, &InternalEntryCompareName);
 	InternalEntryListSort(Buffer+EntryFilesStartIndex, (i32)Count-EntryFilesStartIndex, &InternalEntryCompareName);
 }
@@ -670,6 +669,8 @@ main(i32 ArgumentCount, char **Arguments)
 			if (GLOBALUpdateConsoleDimensions)
 			{
 				// NOTE(Felix): Update Dimensions and force redraw
+				// TODO(Felix): I'm pretty sure resizing the window may yeet
+				// some entries off the grid right here. 
 				ConsoleUpdateDimensions(&ConsoleRows, &ConsoleColumns);
 				GLOBALUpdateConsoleDimensions = 0;
 				continue;
@@ -793,7 +794,35 @@ main(i32 ArgumentCount, char **Arguments)
 			case 'r': {
 				RefreshCurrentDirectory(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, &SelectedIndex, PathBuffer);
 			} break;
+			
+			// NOTE(Felix): Jump to top (first Directory)
+			case 'd': {
+				SelectedIndex = 0;
+				StartDrawIndex = 0;
+			} break;
 
+			// NOTE(Felix): Jump to first file 
+			case 'f': {
+				i32 FirstFileIndex = DirectoryGetFirstFileEntryIndex(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
+				
+				// NOTE(Felix): Check if we need to do scrolling
+				if (FirstFileIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
+					FirstFileIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
+				{
+					// TODO(Felix): Center selection
+				}
+				
+				SelectedIndex = FirstFileIndex;
+			} break;
+			
+			// NOTE(Felix): Jump to end
+			case 'g': {
+				SelectedIndex = (i32)CurrentDirectoryEntryCount-1;
+				
+				// NOTE(Felix): Scroll if not all entries fit in the window
+				StartDrawIndex = MAX((i32)CurrentDirectoryEntryCount - ConsoleRows, 0);
+			} break;
+			
 			// NOTE(Felix): Exit program
 			case 'q': {
 				ExitProgram = 1;

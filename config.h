@@ -1,11 +1,22 @@
 #pragma once
 
+// NOTE(Felix): Controls:
+// 'j' - Move down
+// 'k' - Move up
+// 'h' - Leave directory
+// 'l' - Enter directory / open file
+// 't' - Toggle hidden files / directories
+// 'r' - Refresh contents of current folder
+// 'd' - Jump to top / first directory
+// 'f' - Jump to first file
+// 'g' - Jump to bottom
+// 'q' - Quit
+
 #define SCROLL_OFF 5
 
 global_variable file_type_config GLOBALFileTypeConfig[] = {
-	// File-Ending
-	//              Path to program
-	//                                 IsConsoleApplication
+	// 
+	// File-Ending   Path to program   IsConsoleApplication
 	{ "",           "/bin/nvim",               1            }, // Default
 
 	{ ".pdf",       "/bin/zathura",            0            },
