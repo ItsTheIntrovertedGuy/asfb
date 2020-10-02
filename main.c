@@ -29,6 +29,7 @@
 // Resizing the window sometimes yeets current selection into the shadow realm
 
 // TODO(Felix): A few features we may want to implement:
+// - "g"   - Take one character afterwards and we'll jump to the first entry starting with that character
 // - "/"   - search / filter within directories
 // - "C-F" - skip a "page" (one terminal height of entries)
 // - Some kind of mechanism that doesn't make our program crash if we don't have enough memory
@@ -816,7 +817,7 @@ main(i32 ArgumentCount, char **Arguments)
 			} break;
 			
 			// NOTE(Felix): Jump to end
-			case 'g': {
+			case 'e': {
 				SelectedIndex = (i32)CurrentDirectoryEntryCount-1;
 				
 				// NOTE(Felix): Scroll if not all entries fit in the window

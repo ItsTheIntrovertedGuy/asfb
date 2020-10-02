@@ -9,7 +9,7 @@
 // 'r' - Refresh contents of current folder
 // 'd' - Jump to top / first directory
 // 'f' - Jump to first file
-// 'g' - Jump to bottom
+// 'e' - Jump to end
 // 'q' - Quit
 
 #define SCROLL_OFF 5
