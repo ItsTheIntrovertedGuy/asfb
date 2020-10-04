@@ -26,18 +26,17 @@
 // TODO(Felix): Maybe pull these console ANSI functions out into its include file
 
 // TODO(Felix): Known Bugs:
-// Resizing the window sometimes yeets current selection into the shadow realm
+// - Resizing the window sometimes yeets current selection into the shadow realm
 
 // TODO(Felix): A few features we may want to implement:
-// - "g"   - Take one character afterwards and we'll jump to the first entry starting with that character
-// - "/"   - search / filter within directories
+// - Lowest line (or top) actually displays what is going on (jump to, filter, ...)
+// - Help page that displays all hotkeys
 // - "C-F" - skip a "page" (one terminal height of entries)
+// - I think we should rename "filter" to "search", but meh
 // - Some kind of mechanism that doesn't make our program crash if we don't have enough memory
 //     to hold all directory entries at once
 
 global_variable b32 GLOBALUpdateConsoleDimensions = 0;
-global_variable b32 GLOBALFilterHiddenItems = 0;
-
 
 internal char *
 GetProgramNameFromFullPath(char *FullPath)
@@ -281,7 +280,7 @@ DirectoryEntryPrint(struct dirent *DirectoryEntry)
 internal b32
 InternalEntryCompareName(internal_directory_entry *A, internal_directory_entry *B)
 {
-	// TODO(Felix): Proper sorting, this is garbage
+	// TODO(Felix): This sorting does only work for ascii, so rip my asian tab files
 	i32 Balance = 0;
 	i32 Index = 0;
 	while (Balance == 0 &&
@@ -378,31 +377,64 @@ CreateInternalEntryFromDirent(struct dirent *Entry)
 }
 
 internal b32
-DirentPassesFilter(struct dirent *Entry)
+FilterKeepEntry(char *EntryName, b32 FilterHiddenEntries, 
+                char *SearchString, b32 FilterIsCaseSensitive)
 {
-	// NOTE(Felix): We only want regular files and directories for now
-	if (0 == 
-		((Entry->d_type == DT_DIR) ||
-		 (Entry->d_type == DT_REG)))
-	{
-		return (0);
-	}
+	b32 KeepEntry = 1;
 	
-	// NOTE(Felix): We don't want "." and ".." directories
-	if (Entry->d_name[0] == '.' && 
-		((Entry->d_name[1] == 0) ||
-		 (Entry->d_name[1] == '.' && Entry->d_name[2] == 0)))
+	// NOTE(Felix): We don't want "." and ".." directory links
+	if ((EntryName[0] == '.' && EntryName[1] == 0)  ||
+	    (EntryName[0] == '.' && EntryName[1] == '.' && EntryName[2] == 0))
 	{
-		return (0);
+		KeepEntry = 0;
 	}
-	
-	// NOTE(Felix): Additional filter: Hidden items (any entry starting with ".")
-	if (GLOBALFilterHiddenItems && Entry->d_name[0] == '.')
+
+	// NOTE(Felix): Hidden items (any entry starting with ".")
+	if (FilterHiddenEntries && (EntryName[0] == '.'))
 	{ 
-		return (0);
+		KeepEntry = 0;
+	}
+
+	// NOTE(Felix): Apply check if entry contains search string
+	if (SearchString)
+	{
+		u32 EntryNameLength = StringLength(EntryName);
+		u32 FilterLength = StringLength(SearchString);
+		b32 NameContainsFilter = 0;
+
+		for (u32 CharIndex = 0; CharIndex+FilterLength < EntryNameLength+1; ++CharIndex)
+		{
+			u32 MatchingCharsCount = 0;
+			for (; MatchingCharsCount < FilterLength; ++MatchingCharsCount)
+			{
+				char EntryCharToCompare = EntryName[CharIndex + MatchingCharsCount];
+				char SearchStringCharToCompare = SearchString[MatchingCharsCount];
+				if (0 == FilterIsCaseSensitive)
+				{
+					EntryCharToCompare = CharToLowerIfIsLetter(EntryCharToCompare);
+					SearchStringCharToCompare = CharToLowerIfIsLetter(SearchStringCharToCompare);
+				}
+
+				if (EntryCharToCompare != SearchStringCharToCompare)
+				{
+					break;
+				}
+			}
+
+			if (MatchingCharsCount == FilterLength)
+			{
+				NameContainsFilter = 1;
+				break;
+			}
+		}
+		
+		if (0 == NameContainsFilter)
+		{
+			KeepEntry = 0;
+		}
 	}
 	
-	return (1);
+	return (KeepEntry);
 }
 
 internal i32
@@ -430,7 +462,9 @@ SortDirectoryEntries(internal_directory_entry *Buffer, u32 Count)
 }
 
 internal void
-DirectoryReadIntoBuffer(internal_directory_entry *Buffer, char *DirectoryPath, u32 *EntryCount)
+DirectoryReadIntoBufferAndFilter(internal_directory_entry *Buffer, u32 *EntryCount,
+								 char *DirectoryPath, b32 FilterHiddenEntries,
+								 char *FilterBuffer, b32 FilterIsCaseSensitive)
 {
 	// NOTE(Felix): Open directory stream
 	DIR *DirectoryStream = opendir(DirectoryPath);
@@ -440,11 +474,15 @@ DirectoryReadIntoBuffer(internal_directory_entry *Buffer, char *DirectoryPath, u
 	u32 EntryCountResult = 0;
 	while (DirectoryEntry != 0)
 	{
-		if (DirentPassesFilter(DirectoryEntry))
+		// NOTE(Felix): We only want regular files and directories for now
+		if ((DirectoryEntry->d_type == DT_DIR) || (DirectoryEntry->d_type == DT_REG)) 
 		{
-			internal_directory_entry InternalEntry = CreateInternalEntryFromDirent(DirectoryEntry);
-			Buffer[EntryCountResult] = InternalEntry;
-			EntryCountResult++;
+			if (FilterKeepEntry(DirectoryEntry->d_name, FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive))
+			{
+				internal_directory_entry InternalEntry = CreateInternalEntryFromDirent(DirectoryEntry);
+				Buffer[EntryCountResult] = InternalEntry;
+				EntryCountResult++;
+			}
 		}
 		DirectoryEntry = readdir(DirectoryStream);
 	}
@@ -522,12 +560,185 @@ CalculateStartDrawIndex(i32 NumberOfEntries, i32 SelectedIndex, i32 ConsoleRows)
 }
 
 internal void
-RefreshCurrentDirectory(internal_directory_entry *EntriesBuffer, u32 *EntryCount, i32 *SelectedIndex, char *PathBuffer)
+RefreshCurrentDirectory(internal_directory_entry *EntriesBuffer, u32 *EntryCount, i32 *SelectedIndex, char *DirectoryPath,
+						b32 FilterHiddenEntries, char *FilterBuffer, b32 FilterIsCaseSensitive)
 {
 	// NOTE(Felix): Refresh directory by saving current name, reloading directory and finding the name we saved
 	internal_directory_entry SelectedEntry = EntriesBuffer[*SelectedIndex];
-	DirectoryReadIntoBuffer(EntriesBuffer, PathBuffer, EntryCount);
+	DirectoryReadIntoBufferAndFilter(EntriesBuffer, EntryCount, DirectoryPath, 
+	                                 FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive);
 	*SelectedIndex = DirectoryGetIndexFromName(EntriesBuffer, *EntryCount, SelectedEntry.Name);
+}
+
+internal void
+OpenFileOrEnterDirectory(internal_directory_entry *Entry, 
+						 internal_directory_entry *EntriesBuffer, u32 *EntryCount,
+						 i32 *SelectedIndex, i32 *StartDrawIndex, i32 ConsoleRows,
+						 char *PathBuffer, b32 FilterHiddenEntries,
+						 char *FilterBuffer, b32 FilterIsCaseSensitive)
+{
+	switch (Entry->Type)
+	{
+		case ENTRY_TYPE_FILE: {
+			if (FileIsExecutable(Entry->Name))
+			{
+				// NOTE(Felix): Append executable to path
+				u32 PathLength = StringLength(PathBuffer);
+				u32 FileLength = StringLength(Entry->Name);
+				MemoryCopy(PathBuffer+PathLength, Entry->Name, FileLength);
+				ConsoleCleanup();
+
+				// NOTE(Felix): Execl replaces current process if successfull
+				int ReturnValue = execl(PathBuffer, Entry->Name, 0);
+				ScreenClear();
+				fprintf(stderr, "Error: %d\n", errno);
+				exit(-1);
+			}
+			else
+			{
+				file_type_config ProgramToUseConfig = GetProgramToUseConfig(Entry->Name);
+				char *ProgramName = GetProgramNameFromFullPath(ProgramToUseConfig.PathToProgram);
+
+				ConsoleCleanup();
+				pid_t ChildProcessID = fork();
+				if (0 == ChildProcessID)
+				{
+					// NOTE(Felix): This is the child process
+					if (0 == ProgramToUseConfig.IsConsoleApplication)
+					{
+						// NOTE(Felix): Unlink from parent
+						setsid();
+					}
+					execl(ProgramToUseConfig.PathToProgram, ProgramName, Entry->Name, 0);
+				}
+				else
+				{
+					// NOTE(Felix): This is the parent process
+					if (ProgramToUseConfig.IsConsoleApplication)
+					{
+						// NOTE(Felix): Wait for child to finish, as it is using the console drawing 
+						waitpid(ChildProcessID, 0, 0);
+					}
+				}
+				ConsoleSetup();
+			}
+		} break;
+
+		case ENTRY_TYPE_DIRECTORY: {
+			DirectoryEnter(PathBuffer, Entry->Name);
+			DirectoryReadIntoBufferAndFilter(EntriesBuffer, EntryCount, PathBuffer, 
+			                                 FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive);
+			*SelectedIndex = 0;
+			*StartDrawIndex = CalculateStartDrawIndex((i32)*EntryCount, *SelectedIndex, ConsoleRows);
+		} break;
+
+		default: {
+			// noop
+		} break;
+	}
+}
+
+internal void
+ClearFilter(char *FilterBuffer, u32 *FilterBufferIndex)
+{
+	FilterBuffer[0] = 0;
+	*FilterBufferIndex = 0;
+}
+
+internal void
+SearchFilterInputCharacter(internal_directory_entry *EntriesBuffer, u32 *EntryCount, 
+						   i32 *SelectedIndex, i32 *StartDrawIndex, i32 ConsoleRows,
+						   char *DirectoryPath, b32 FilterHiddenEntries,
+                           char *FilterBuffer, u32 *FilterBufferIndex, u32 FilterBufferSize,
+                           program_state *ProgramState, i32 InputCharacter, b32 FilterIsCaseSensitive)
+{
+	// TODO(Felix): I'm not a fan of how I'm solving this
+	// Whenever we "broaden" up our search, we re-read the whole directory into our buffer
+	// this makes the code easy, but is probably really unperformant on bigger directories
+	// then again I haven't measured stuff so it may be fine I dunno
+
+	switch (InputCharacter)
+	{
+		// NOTE(Felix): Delete last character of filter
+		// We just refill the buffer and reapply the updated filter
+		case 127: // DEL, terminal emulators (at least mine) sends this when pressing backspace
+		case '\b': { 
+			if (*FilterBufferIndex > 0)
+			{
+				*FilterBufferIndex -= 1;
+				FilterBuffer[*FilterBufferIndex] = 0;
+				DirectoryReadIntoBufferAndFilter(EntriesBuffer, EntryCount,
+				                                 DirectoryPath, FilterHiddenEntries,
+				                                 FilterBuffer, FilterIsCaseSensitive);
+			}
+		} break;
+		
+		// NOTE(Felix): Reset, but don't abort search
+		case 23: { // Control-W
+			ClearFilter(FilterBuffer, FilterBufferIndex);
+			DirectoryReadIntoBufferAndFilter(EntriesBuffer, EntryCount,
+											 DirectoryPath, FilterHiddenEntries,
+											 0, 0);
+		} break;
+		
+		// NOTE(Felix): Abort search
+		case 27: { // ESC
+			ClearFilter(FilterBuffer, FilterBufferIndex);
+			DirectoryReadIntoBufferAndFilter(EntriesBuffer, EntryCount,
+											 DirectoryPath, FilterHiddenEntries,
+											 0, 0);
+			*ProgramState = PROGRAM_STATE_BROWSING;
+		} break;
+		
+		// NOTE(Felix): Return to browsing mode.
+		// If there's just one item left, also enter / open that entry as well
+		/* I don't think '\r' is actually used (on linux at least), so just delete this comment if it actually does */ //case '\r': 
+		case '\n': { // Enter
+			*StartDrawIndex = 0;
+			*SelectedIndex = 0;
+			*ProgramState = PROGRAM_STATE_BROWSING;
+			
+			if (*EntryCount == 1)
+			{
+				internal_directory_entry *Entry = &EntriesBuffer[0];
+				OpenFileOrEnterDirectory(Entry,
+				                         EntriesBuffer, EntryCount,
+				                         SelectedIndex, StartDrawIndex, ConsoleRows,
+				                         DirectoryPath, FilterHiddenEntries,
+				                         FilterBuffer, FilterIsCaseSensitive);
+			}
+		} break;
+		
+		// NOTE(Felix): Add character to search (if it is valid) and update filter
+		default: {
+			if (0 == CharIsAsciiControlCharacter((char)InputCharacter) &&
+				*FilterBufferIndex+2 < FilterBufferSize) // two spaces free - one for the new char, another one for 0 terminator
+			{
+				FilterBuffer[*FilterBufferIndex] = (char)InputCharacter;
+				*FilterBufferIndex += 1;
+				FilterBuffer[*FilterBufferIndex] = 0; // Zero terminate string
+				
+				u32 Index = 0;
+				while (Index < *EntryCount)
+				{
+					if (FilterKeepEntry(EntriesBuffer[Index].Name, FilterHiddenEntries,
+										FilterBuffer, FilterIsCaseSensitive))
+					{
+						++Index;
+					}
+					else
+					{
+						// NOTE(Felix): Remove entry by copying (and thus overwriting)
+						// the rest of the entries one slot "down"
+						*EntryCount -= 1;
+						u32 SlotsToMove = *EntryCount - Index;
+						MemoryCopy(&EntriesBuffer[Index], &EntriesBuffer[Index+1], 
+								   sizeof(EntriesBuffer[0]) * SlotsToMove);
+					}
+				}
+			}
+		} break;
+	}
 }
 
 internal void
@@ -588,6 +799,14 @@ main(i32 ArgumentCount, char **Arguments)
 		chdir(Arguments[1]);
 	}
 
+	// NOTE(Felix): Setup state and filter buffer two states will use
+	program_state ProgramState = PROGRAM_STATE_BROWSING;
+	b32 FilterHiddenEntries = 0;
+	b32 FilterIsCaseSensitive = 0;
+	enum { FILTER_BUFFER_SIZE = 256 };
+	char FilterBuffer[FILTER_BUFFER_SIZE] = { 0 };
+	u32 FilterBufferIndex = 0;
+
 	// NOTE(Felix): Get current directory string and format properly
 	char PathBuffer[PATH_MAX] = { 0 };
 	getcwd(PathBuffer, sizeof(PathBuffer));
@@ -597,7 +816,7 @@ main(i32 ArgumentCount, char **Arguments)
 	u32 CurrentDirectoryEntriesBufferSize = MEBIBYTES(2);
 	internal_directory_entry *CurrentDirectoryEntriesBuffer = mmap(0, CurrentDirectoryEntriesBufferSize, PROT_READ|PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	u32 CurrentDirectoryEntryCount = 0;
-	DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer, &CurrentDirectoryEntryCount);
+	DirectoryReadIntoBufferAndFilter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, PathBuffer, FilterHiddenEntries, 0, 0);
 	SortDirectoryEntries(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
 	
 	// NOTE(Felix): Prepare for drawing
@@ -617,6 +836,7 @@ main(i32 ArgumentCount, char **Arguments)
 		ColorResetToDefault();
 		ScreenClear();
 
+		// TODO(Felix): We want to do some fancy display for the search
 		if (CurrentDirectoryEntryCount > 0)
 		{
 			// NOTE(Felix): Print all valid entries
@@ -644,9 +864,19 @@ main(i32 ArgumentCount, char **Arguments)
 			ClearCurrentLine();
 			printf("<empty>");
 		}
+
+		
+		// TODO(Felix): Display search string
+		// TODO(Felix): Debug stuff, don't take to seriously
+		//if (FilterBuffer[0] != 0)
+		{
+			CursorMove(ConsoleRows-1, 0);
+			ClearCurrentLine();
+			printf("Search term: \"%s\", %d", FilterBuffer, FilterBufferIndex);
+		}
 		
 		
-		// NOTE(Felix): Process input
+		// NOTE(Felix): Get input (and/or catch resize of window)
 		int InputCharacter = 0;
 		{
 			struct pollfd PollRequest = { 0 };
@@ -679,159 +909,194 @@ main(i32 ArgumentCount, char **Arguments)
 			
 			read(STDIN_FILENO, &InputCharacter, sizeof(InputCharacter));
 		}
+		
 
-		switch (InputCharacter)
+		// NOTE(Felix): Input is dependant on program state
+		switch (ProgramState)
 		{
-			// NOTE(Felix): Move down
-			case 'j': {
-				SelectedIndex = MIN((i32)CurrentDirectoryEntryCount-1, SelectedIndex+1);
-				
-				// NOTE(Felix): Scrolling
-				if (SelectedIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
-					SelectedIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
+			// NOTE(Felix): Input characters are mapped to do different things
+			case PROGRAM_STATE_BROWSING: {
+				switch (InputCharacter)
 				{
-					StartDrawIndex++;
-				}
-			} break;
-			
-			// NOTE(Felix): Move Up
-			case 'k': {
-				SelectedIndex = MAX(0, SelectedIndex-1);
-				
-				// NOTE(Felix): Scrolling
-				if (SelectedIndex - StartDrawIndex <= SCROLL_OFF)
-				{
-					StartDrawIndex = MAX(StartDrawIndex-1, 0);
-				}
-			} break;
-			
-			// NOTE(Felix): Leave directory
-			case 'h': {
-				// NOTE(Felix): Make sure we're not in the "root directory"
-				if (0 == (PathBuffer[0] == '/' && PathBuffer[1] == 0))
-				{
-					// NOTE(Felix): We want to automatically select the folder we just left
-					char PreviousDirectoryStringBuffer[PATH_MAX] = { 0 };
-					ReadCurrentDirectoryNameIntoBuffer(PreviousDirectoryStringBuffer, PathBuffer);
-					LeaveDirectory(PathBuffer);
-					DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer, &CurrentDirectoryEntryCount);
-					SelectedIndex = DirectoryGetIndexFromName(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount, PreviousDirectoryStringBuffer);
-					
-					// NOTE(Felix): Center selection
-					StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
-				}
-			} break;
-			
-			// NOTE(Felix): Open file or enter directory
-			case 'l': {
-				internal_directory_entry CurrentEntry = CurrentDirectoryEntriesBuffer[SelectedIndex];
-				switch (CurrentEntry.Type)
-				{
-					case ENTRY_TYPE_FILE: {
-						if (FileIsExecutable(CurrentEntry.Name))
-						{
-							// NOTE(Felix): Append executable to path
-							u32 PathLength = StringLength(PathBuffer);
-							u32 FileLength = StringLength(CurrentEntry.Name);
-							MemoryCopy(PathBuffer+PathLength, CurrentEntry.Name, FileLength);
-							ConsoleCleanup();
+					// NOTE(Felix): Move down
+					case 'j': {
+						SelectedIndex = MIN((i32)CurrentDirectoryEntryCount-1, SelectedIndex+1);
 
-							// NOTE(Felix): Execl replaces current process if successfull
-							int ReturnValue = execl(PathBuffer, CurrentEntry.Name, 0);
-							ScreenClear();
-							fprintf(stderr, "Error: %d\n", errno);
-							exit(-1);
-						}
-						else
+						// NOTE(Felix): Scrolling
+						if (SelectedIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
+						    SelectedIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
 						{
-							file_type_config ProgramToUseConfig = GetProgramToUseConfig(CurrentEntry.Name);
-							char *ProgramName = GetProgramNameFromFullPath(ProgramToUseConfig.PathToProgram);
-
-							ConsoleCleanup();
-							pid_t ChildProcessID = fork();
-							if (0 == ChildProcessID)
-							{
-								// NOTE(Felix): This is the child process
-								if (0 == ProgramToUseConfig.IsConsoleApplication)
-								{
-									// NOTE(Felix): Unlink from parent
-									setsid();
-								}
-								execl(ProgramToUseConfig.PathToProgram, ProgramName, CurrentEntry.Name, 0);
-							}
-							else
-							{
-								// NOTE(Felix): This is the parent process
-								if (ProgramToUseConfig.IsConsoleApplication)
-								{
-									// NOTE(Felix): Wait for child to finish, as it is using the console drawing 
-									waitpid(ChildProcessID, 0, 0);
-								}
-							}
-							ConsoleSetup();
+							StartDrawIndex++;
 						}
 					} break;
 
-					case ENTRY_TYPE_DIRECTORY: {
-						DirectoryEnter(PathBuffer, CurrentEntry.Name);
-						DirectoryReadIntoBuffer(CurrentDirectoryEntriesBuffer, PathBuffer, &CurrentDirectoryEntryCount);
+					// NOTE(Felix): Move Up
+					case 'k': {
+						SelectedIndex = MAX(0, SelectedIndex-1);
+
+						// NOTE(Felix): Scrolling
+						if (SelectedIndex - StartDrawIndex <= SCROLL_OFF)
+						{
+							StartDrawIndex = MAX(StartDrawIndex-1, 0);
+						}
+					} break;
+
+					// NOTE(Felix): Leave directory
+					case 'h': {
+						// NOTE(Felix): Make sure we're not in the "root directory"
+						if (0 == (PathBuffer[0] == '/' && PathBuffer[1] == 0))
+						{
+							ClearFilter(FilterBuffer, &FilterBufferIndex);
+
+							// NOTE(Felix): We want to automatically select the folder we just left
+							char PreviousDirectoryStringBuffer[PATH_MAX] = { 0 };
+							ReadCurrentDirectoryNameIntoBuffer(PreviousDirectoryStringBuffer, PathBuffer);
+							LeaveDirectory(PathBuffer);
+							DirectoryReadIntoBufferAndFilter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, PathBuffer, 
+															 FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive);
+							SelectedIndex = DirectoryGetIndexFromName(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount, PreviousDirectoryStringBuffer);
+
+							// NOTE(Felix): Center selection
+							StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
+						}
+					} break;
+
+					// NOTE(Felix): Open file or enter directory
+					case 'l': {
+						ClearFilter(FilterBuffer, &FilterBufferIndex);
+						internal_directory_entry *Entry = &CurrentDirectoryEntriesBuffer[SelectedIndex];
+						OpenFileOrEnterDirectory(Entry, 
+												 CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount,
+												 &SelectedIndex, &StartDrawIndex, ConsoleRows,
+												 PathBuffer, FilterHiddenEntries,
+												 FilterBuffer, FilterIsCaseSensitive);
+					} break;
+
+					// NOTE(Felix): Toggle hidden files 
+					case 't': {
+						FilterHiddenEntries = !FilterHiddenEntries;
+						RefreshCurrentDirectory(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, &SelectedIndex, PathBuffer,
+												FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive);
+					} break;
+
+					// NOTE(Felix): Force refresh
+					case 'r': {
+						RefreshCurrentDirectory(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, &SelectedIndex, PathBuffer,
+												FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive);
+					} break;
+
+					// NOTE(Felix): Jump to top (first Directory)
+					case 'd': {
 						SelectedIndex = 0;
-						StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
+						StartDrawIndex = 0;
 					} break;
 
+					// NOTE(Felix): Jump to first file 
+					case 'f': {
+						i32 FirstFileIndex = DirectoryGetFirstFileEntryIndex(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
+
+						// NOTE(Felix): Check if we need to do scrolling
+						if (FirstFileIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
+						    FirstFileIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
+						{
+							// TODO(Felix): Center selection
+						}
+
+						SelectedIndex = FirstFileIndex;
+					} break;
+
+					// NOTE(Felix): Jump to end
+					case 'e': {
+						SelectedIndex = (i32)CurrentDirectoryEntryCount-1;
+
+						// NOTE(Felix): Scroll if not all entries fit in the window
+						StartDrawIndex = MAX((i32)CurrentDirectoryEntryCount - ConsoleRows, 0);
+					} break;
+					
+					// NOTE(Felix): Try to jump to character given afterwards
+					case 'g': {
+						ProgramState = PROGRAM_STATE_AWAITING_JUMP_CHARACTER;
+					} break;
+
+					// NOTE(Felix): Filter case   sensitive
+					case '/': {
+ 						ProgramState = PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE;
+						ClearFilter(FilterBuffer, &FilterBufferIndex);
+						DirectoryReadIntoBufferAndFilter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount,
+														 PathBuffer, FilterHiddenEntries,
+														 0, 0);
+					} break;
+
+					// NOTE(Felix): Filter case insensitive
+					case '?': {
+ 						ProgramState = PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE;
+						ClearFilter(FilterBuffer, &FilterBufferIndex);
+						DirectoryReadIntoBufferAndFilter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount,
+														 PathBuffer, FilterHiddenEntries,
+														 0, 0);
+					} break;
+					
+					// NOTE(Felix): Reset filter
+					case 27: { // ESC
+						ClearFilter(FilterBuffer, &FilterBufferIndex);
+						DirectoryReadIntoBufferAndFilter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount,
+														 PathBuffer, FilterHiddenEntries,
+														 0, 0);
+					} break;
+
+					// NOTE(Felix): Exit program
+					case 'q': {
+						ExitProgram = 1;
+					} break;
+
+					// NOTE(Felix): Unbound key
 					default: {
-						// noop
+						// noop;
 					} break;
 				}
 			} break;
-
-			// NOTE(Felix): Toggle hidden files 
-			case 't': {
-				GLOBALFilterHiddenItems = !GLOBALFilterHiddenItems;
-				RefreshCurrentDirectory(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, &SelectedIndex, PathBuffer);
-			} break;
 			
-			// NOTE(Felix): Force refresh
-			case 'r': {
-				RefreshCurrentDirectory(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, &SelectedIndex, PathBuffer);
-			} break;
-			
-			// NOTE(Felix): Jump to top (first Directory)
-			case 'd': {
-				SelectedIndex = 0;
-				StartDrawIndex = 0;
-			} break;
 
-			// NOTE(Felix): Jump to first file 
-			case 'f': {
-				i32 FirstFileIndex = DirectoryGetFirstFileEntryIndex(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
-				
-				// NOTE(Felix): Check if we need to do scrolling
-				if (FirstFileIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
-					FirstFileIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
+			// NOTE(Felix): Jump to first entry starting with InputCharacter
+			case PROGRAM_STATE_AWAITING_JUMP_CHARACTER: {
+				InputCharacter = CharToLowerIfIsLetter((char)InputCharacter);
+				i32 IndexToJumpTo = -1;
+				for (i32 Index = 0; Index < (i32)CurrentDirectoryEntryCount; ++Index)
 				{
-					// TODO(Felix): Center selection
+					char StartingCharacter = CharToLowerIfIsLetter(CurrentDirectoryEntriesBuffer[Index].Name[0]);
+					if (StartingCharacter == InputCharacter)
+					{
+						IndexToJumpTo = Index;
+						break;
+					}
 				}
 				
-				SelectedIndex = FirstFileIndex;
-			} break;
-			
-			// NOTE(Felix): Jump to end
-			case 'e': {
-				SelectedIndex = (i32)CurrentDirectoryEntryCount-1;
+				if (IndexToJumpTo >= 0)
+				{
+					// TODO(Felix): Scrolling because the index might be offscreen
+					// TODO(Felix): Instead of doing these checks all the time,
+					// we should probably have a function we can reuse
+					SelectedIndex = IndexToJumpTo;
+				}
 				
-				// NOTE(Felix): Scroll if not all entries fit in the window
-				StartDrawIndex = MAX((i32)CurrentDirectoryEntryCount - ConsoleRows, 0);
+				ProgramState = PROGRAM_STATE_BROWSING;
 			} break;
+
 			
-			// NOTE(Felix): Exit program
-			case 'q': {
-				ExitProgram = 1;
+			case PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE: {
+				SearchFilterInputCharacter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, 
+										   &SelectedIndex, &StartDrawIndex, ConsoleRows,
+										   PathBuffer, FilterHiddenEntries,
+										   FilterBuffer, &FilterBufferIndex, FILTER_BUFFER_SIZE,
+										   &ProgramState, InputCharacter, 1);
 			} break;
-			
-			// NOTE(Felix): Unbound key
-			default: {
-				// noop;
+
+			case PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE: {
+				SearchFilterInputCharacter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount, 
+										   &SelectedIndex, &StartDrawIndex, ConsoleRows,
+										   PathBuffer, FilterHiddenEntries, 
+										   FilterBuffer, &FilterBufferIndex, FILTER_BUFFER_SIZE,
+										   &ProgramState, InputCharacter, 0);
 			} break;
 		}
 	}

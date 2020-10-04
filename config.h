@@ -1,16 +1,21 @@
 #pragma once
 
 // NOTE(Felix): Controls:
-// 'j' - Move down
-// 'k' - Move up
-// 'h' - Leave directory
-// 'l' - Enter directory / open file
-// 't' - Toggle hidden files / directories
-// 'r' - Refresh contents of current folder
-// 'd' - Jump to top / first directory
-// 'f' - Jump to first file
-// 'e' - Jump to end
-// 'q' - Quit
+// 'j'   - Move down
+// 'k'   - Move up
+// 'h'   - Leave directory
+// 'l'   - Enter directory / open file
+// 't'   - Toggle hidden files / directories
+// 'r'   - Refresh contents of current folder
+// 'd'   - Jump to top / first directory
+// 'f'   - Jump to first file
+// 'e'   - Jump to end
+// 'g'   - Jump to first entry starting with the following character (case insensitive)
+// '/'   - Search (case insensitive)
+// '?'   - Search (case sensitive)
+// 'C-w' - Clear but continue search
+// 'esc' - Clear search and enter browsing mode
+// 'q'   - Quit
 
 #define SCROLL_OFF 5
 
