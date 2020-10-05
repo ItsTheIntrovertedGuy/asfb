@@ -1,20 +1,17 @@
 #define _DEFAULT_SOURCE
 
-#include <unistd.h>
 #include <linux/limits.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <signal.h>
 #include <sys/mman.h>
-#include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <termios.h>
 #include <poll.h>
 #include <errno.h>
 
 #include "language_layer.h"
+#include "console.c"
 #include "main.h"
 #include "config.h"
 
@@ -217,56 +214,6 @@ ColorResetToDefault()
 	ColorSet(Default);
 }
 
-
-internal void
-ScreenClear(void)
-{
-	printf("\033[2J");
-}
-
-internal void
-ClearCurrentLine(void)
-{
-	printf("\033[2K");
-}
-
-internal void
-EchoDisable(void)
-{
-	struct termios TerminalSettings = { 0 };
-	tcgetattr(STDOUT_FILENO, &TerminalSettings);
-	TerminalSettings.c_lflag &= (tcflag_t) ~ECHO;
-	tcsetattr(STDOUT_FILENO, TCSANOW, &TerminalSettings);
-}
-
-internal void
-EchoEnable(void)
-{
-	struct termios TerminalSettings = { 0 };
-	tcgetattr(STDOUT_FILENO, &TerminalSettings);
-	TerminalSettings.c_lflag |= (tcflag_t) ECHO;
-	tcsetattr(STDOUT_FILENO, TCSANOW, &TerminalSettings);
-}
-
-internal void
-CursorHide(void)
-{
-	printf("\033[?25l");
-}
-
-internal void
-CursorShow(void)
-{
-	printf("\033[?25h");
-}
-
-internal void
-CursorMove(i32 Y, i32 X)
-{
-	// NOTE(Felix): This function is zero indexed, ANSI escape sequences apparently aren't though
-	printf("\033[%d;%dH", Y+1, X+1);
-}
-
 internal void
 DirectoryEntryPrint(struct dirent *DirectoryEntry)
 {
@@ -398,37 +345,7 @@ FilterKeepEntry(char *EntryName, b32 FilterHiddenEntries,
 	// NOTE(Felix): Apply check if entry contains search string
 	if (SearchString)
 	{
-		u32 EntryNameLength = StringLength(EntryName);
-		u32 FilterLength = StringLength(SearchString);
-		b32 NameContainsFilter = 0;
-
-		for (u32 CharIndex = 0; CharIndex+FilterLength < EntryNameLength+1; ++CharIndex)
-		{
-			u32 MatchingCharsCount = 0;
-			for (; MatchingCharsCount < FilterLength; ++MatchingCharsCount)
-			{
-				char EntryCharToCompare = EntryName[CharIndex + MatchingCharsCount];
-				char SearchStringCharToCompare = SearchString[MatchingCharsCount];
-				if (0 == FilterIsCaseSensitive)
-				{
-					EntryCharToCompare = CharToLowerIfIsLetter(EntryCharToCompare);
-					SearchStringCharToCompare = CharToLowerIfIsLetter(SearchStringCharToCompare);
-				}
-
-				if (EntryCharToCompare != SearchStringCharToCompare)
-				{
-					break;
-				}
-			}
-
-			if (MatchingCharsCount == FilterLength)
-			{
-				NameContainsFilter = 1;
-				break;
-			}
-		}
-		
-		if (0 == NameContainsFilter)
+		if (0 == StringContains(EntryName, SearchString, FilterIsCaseSensitive))
 		{
 			KeepEntry = 0;
 		}
@@ -742,15 +659,6 @@ SearchFilterInputCharacter(internal_directory_entry *EntriesBuffer, u32 *EntryCo
 }
 
 internal void
-ConsoleUpdateDimensions(i32 *ConsoleRows, i32 *ConsoleColumns)
-{
-	struct winsize ConsoleDimensions = { 0 };
-	ioctl(STDOUT_FILENO, TIOCGWINSZ, &ConsoleDimensions);
-	*ConsoleRows = ConsoleDimensions.ws_row;
-	*ConsoleColumns = ConsoleDimensions.ws_col;
-}
-
-internal void
 SignalSIGINTHandler(int Signal)
 {
 	ConsoleCleanup();
@@ -883,19 +791,10 @@ main(i32 ArgumentCount, char **Arguments)
 			PollRequest.fd = STDIN_FILENO;
 			PollRequest.events = POLLIN;
 
-#if 0
-			// NOTE(Felix): In 500ms intervall
-			while (0 == PollRequest.revents &&
-				   0 == GLOBALUpdateConsoleDimensions)
-			{
-				poll(&PollRequest, 1, 500);
-			}
-#else
 			// NOTE(Felix): Wait for either
-			//  - Buffered Input
+			//  - Input
 			//  - Interrupt of any kind (including resizing of console)
 			poll(&PollRequest, 1, -1);
-#endif
 			
 			if (GLOBALUpdateConsoleDimensions)
 			{
