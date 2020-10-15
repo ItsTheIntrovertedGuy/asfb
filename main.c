@@ -22,13 +22,8 @@
 // "chdir":    Change current working directory
 // TODO(Felix): Maybe pull these console ANSI functions out into its include file
 
-// TODO(Felix): Known Bugs:
-// - Resizing the window sometimes yeets current selection into the shadow realm
-
 // TODO(Felix): A few features we may want to implement:
-// - Lowest line (or top) actually displays what is going on (jump to, filter, ...)
 // - Help page that displays all hotkeys
-// - "C-F" - skip a "page" (one terminal height of entries)
 // - I think we should rename "filter" to "search", but meh
 // - Some kind of mechanism that doesn't make our program crash if we don't have enough memory
 //     to hold all directory entries at once
@@ -228,6 +223,7 @@ internal b32
 InternalEntryCompareName(internal_directory_entry *A, internal_directory_entry *B)
 {
 	// TODO(Felix): This sorting does only work for ascii, so rip my asian tab files
+	// Also we're not sorting numbers only files correctly, reee 
 	i32 Balance = 0;
 	i32 Index = 0;
 	while (Balance == 0 &&
@@ -359,7 +355,7 @@ DirectoryGetFirstFileEntryIndex(internal_directory_entry *Buffer, u32 Count)
 {
 	i32 ResultIndex = 0;
 	for (; 
-		 (Buffer[ResultIndex].Type != ENTRY_TYPE_FILE) && (ResultIndex+1 < (i32)Count); 
+		 (Buffer[ResultIndex].Type != ENTRY_TYPE_FILE) && (ResultIndex < (i32)Count); 
 		 ++ResultIndex) 
 	{ 
 		// noop;
@@ -506,39 +502,36 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 				ConsoleCleanup();
 
 				// NOTE(Felix): Execl replaces current process if successfull
-				int ReturnValue = execl(PathBuffer, Entry->Name, 0);
-				ScreenClear();
-				fprintf(stderr, "Error: %d\n", errno);
-				exit(-1);
+				// If it fails, we'll simply try open it with something
+				execl(PathBuffer, Entry->Name, 0);
+			}
+
+			file_type_config ProgramToUseConfig = GetProgramToUseConfig(Entry->Name);
+			char *ProgramName = GetProgramNameFromFullPath(ProgramToUseConfig.PathToProgram);
+
+			ConsoleCleanup();
+			pid_t ChildProcessID = fork();
+			if (0 == ChildProcessID)
+			{
+				// NOTE(Felix): This is the child process
+
+				// NOTE(Felix): Unlink from parent if it's a console application
+				if (0 == ProgramToUseConfig.IsConsoleApplication)
+				{
+					setsid();
+				}
+				execl(ProgramToUseConfig.PathToProgram, ProgramName, Entry->Name, 0);
 			}
 			else
 			{
-				file_type_config ProgramToUseConfig = GetProgramToUseConfig(Entry->Name);
-				char *ProgramName = GetProgramNameFromFullPath(ProgramToUseConfig.PathToProgram);
-
-				ConsoleCleanup();
-				pid_t ChildProcessID = fork();
-				if (0 == ChildProcessID)
+				// NOTE(Felix): This is the parent process
+				if (ProgramToUseConfig.IsConsoleApplication)
 				{
-					// NOTE(Felix): This is the child process
-					if (0 == ProgramToUseConfig.IsConsoleApplication)
-					{
-						// NOTE(Felix): Unlink from parent
-						setsid();
-					}
-					execl(ProgramToUseConfig.PathToProgram, ProgramName, Entry->Name, 0);
+					// NOTE(Felix): Wait for child to finish, as it is using the console drawing 
+					waitpid(ChildProcessID, 0, 0);
 				}
-				else
-				{
-					// NOTE(Felix): This is the parent process
-					if (ProgramToUseConfig.IsConsoleApplication)
-					{
-						// NOTE(Felix): Wait for child to finish, as it is using the console drawing 
-						waitpid(ChildProcessID, 0, 0);
-					}
-				}
-				ConsoleSetup();
 			}
+			ConsoleSetup();
 		} break;
 
 		case ENTRY_TYPE_DIRECTORY: {
@@ -658,6 +651,44 @@ SearchFilterInputCharacter(internal_directory_entry *EntriesBuffer, u32 *EntryCo
 	}
 }
 
+internal b32
+IndexIsOffscreen(i32 SelectedIndex, i32 StartDrawIndex, i32 ConsoleRows)
+{
+	if (SelectedIndex < StartDrawIndex ||
+		SelectedIndex - StartDrawIndex >= ConsoleRows)
+	{
+		return (1);
+	}
+	else
+	{
+		return (0);
+	}
+}
+
+internal i32
+CenterIndexByReturningStartDrawIndex(i32 SelectedIndex, i32 StartDrawIndex, 
+                                     u32 EntryCount, i32 ConsoleRows)
+{
+	i32 HalfHeight = ConsoleRows / 2;
+
+	if (SelectedIndex - HalfHeight < 0)
+	{
+		// NOTE(Felix): Centering the selection is not possible because we're
+		// too close to the start, clamp
+		return (0);
+	}
+	else if (SelectedIndex + HalfHeight >= (i32)EntryCount)
+	{
+		// NOTE(Felix): Centering the selection is not possible because we're
+		// too close to the end, clamp
+		return ((i32)EntryCount - ConsoleRows);
+	}
+	else
+	{
+		return (SelectedIndex - HalfHeight);
+	}
+}
+
 internal void
 SignalSIGINTHandler(int Signal)
 {
@@ -744,7 +775,6 @@ main(i32 ArgumentCount, char **Arguments)
 		ColorResetToDefault();
 		ScreenClear();
 
-		// TODO(Felix): We want to do some fancy display for the search
 		if (CurrentDirectoryEntryCount > 0)
 		{
 			// NOTE(Felix): Print all valid entries
@@ -774,13 +804,19 @@ main(i32 ArgumentCount, char **Arguments)
 		}
 
 		
-		// TODO(Felix): Display search string
-		// TODO(Felix): Debug stuff, don't take to seriously
-		//if (FilterBuffer[0] != 0)
+		// NOTE(Felix): Display search string
+		// TODO(Felix): Debug stuff, is pretty ugly and will probably hide an entry
+		// if we're filling all rows
+		if (FilterBuffer[0] != 0 ||
+			ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE ||
+			ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE)
 		{
 			CursorMove(ConsoleRows-1, 0);
+			ColorResetToDefault();
 			ClearCurrentLine();
-			printf("Search term: \"%s\", %d", FilterBuffer, FilterBufferIndex);
+			printf("Search term (%s): %s", 
+			       (FilterIsCaseSensitive) ? "(Case sensitive)" : ("Case insensitive"),
+				   FilterBuffer);
 		}
 		
 		
@@ -799,10 +835,13 @@ main(i32 ArgumentCount, char **Arguments)
 			if (GLOBALUpdateConsoleDimensions)
 			{
 				// NOTE(Felix): Update Dimensions and force redraw
-				// TODO(Felix): I'm pretty sure resizing the window may yeet
-				// some entries off the grid right here. 
 				ConsoleUpdateDimensions(&ConsoleRows, &ConsoleColumns);
 				GLOBALUpdateConsoleDimensions = 0;
+				if (IndexIsOffscreen(SelectedIndex, StartDrawIndex, ConsoleRows))
+				{
+					StartDrawIndex = CenterIndexByReturningStartDrawIndex(SelectedIndex, StartDrawIndex,
+																		  CurrentDirectoryEntryCount, ConsoleRows);
+				}
 				continue;
 			}
 			
@@ -892,16 +931,18 @@ main(i32 ArgumentCount, char **Arguments)
 
 					// NOTE(Felix): Jump to first file 
 					case 'f': {
-						i32 FirstFileIndex = DirectoryGetFirstFileEntryIndex(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
-
-						// NOTE(Felix): Check if we need to do scrolling
-						if (FirstFileIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
-						    FirstFileIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
+						if (CurrentDirectoryEntryCount > 0)
 						{
-							// TODO(Felix): Center selection
-						}
+							i32 FirstFileIndex = DirectoryGetFirstFileEntryIndex(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
+							FirstFileIndex = CLAMP(FirstFileIndex, 0, (i32)CurrentDirectoryEntryCount-1);
 
-						SelectedIndex = FirstFileIndex;
+							if (IndexIsOffscreen(FirstFileIndex, StartDrawIndex, ConsoleRows))
+							{
+								StartDrawIndex = CenterIndexByReturningStartDrawIndex(FirstFileIndex, StartDrawIndex,
+																					  CurrentDirectoryEntryCount, ConsoleRows);
+							}
+							SelectedIndex = FirstFileIndex;
+						}
 					} break;
 
 					// NOTE(Felix): Jump to end
@@ -942,6 +983,50 @@ main(i32 ArgumentCount, char **Arguments)
 														 PathBuffer, FilterHiddenEntries,
 														 0, 0);
 					} break;
+					
+					// NOTE(Felix): Skip a page forward
+					case 6: { // CTRL-F
+						if ((i32)CurrentDirectoryEntryCount - StartDrawIndex < ConsoleRows)
+						{
+							// NOTE(Felix): Last index is on screen, just select that
+							SelectedIndex = (i32)CurrentDirectoryEntryCount-1;
+						}
+						else if (StartDrawIndex + 2*ConsoleRows < (i32)CurrentDirectoryEntryCount)
+						{
+							// NOTE(Felix): Skipping a page does not display the last entry, so just
+							// happily skip along
+							SelectedIndex  += ConsoleRows;
+							StartDrawIndex += ConsoleRows;
+						}
+						else 
+						{
+							// NOTE(Felix): Scrolling reveals the end of all entries
+							StartDrawIndex = (i32)CurrentDirectoryEntryCount - ConsoleRows;
+							SelectedIndex = MIN((i32)CurrentDirectoryEntryCount - 1, SelectedIndex + ConsoleRows);
+						}
+					} break;
+					
+					// NOTE(Felix): Skip a page backward
+					case 2: { // CTRL-B
+						if (StartDrawIndex == 0)
+						{
+							// NOTE(Felix): First index is on screen, just select that
+							SelectedIndex = 0;
+						}
+						else if (StartDrawIndex - ConsoleRows > 0)
+						{
+							// NOTE(Felix): Skipping a page does not display first entry, so just
+							// happily skip along
+							SelectedIndex  -= ConsoleRows;
+							StartDrawIndex -= ConsoleRows;
+						}
+						else
+						{
+							// NOTE(Felix): Scrolling reveals the start of all entries
+							StartDrawIndex = 0;
+							SelectedIndex = MAX(0, SelectedIndex - ConsoleRows);
+						}
+					} break;
 
 					// NOTE(Felix): Exit program
 					case 'q': {
@@ -972,9 +1057,11 @@ main(i32 ArgumentCount, char **Arguments)
 				
 				if (IndexToJumpTo >= 0)
 				{
-					// TODO(Felix): Scrolling because the index might be offscreen
-					// TODO(Felix): Instead of doing these checks all the time,
-					// we should probably have a function we can reuse
+					if (IndexIsOffscreen(IndexToJumpTo, StartDrawIndex, ConsoleRows))
+					{
+						StartDrawIndex = CenterIndexByReturningStartDrawIndex(SelectedIndex, StartDrawIndex, 
+																			  CurrentDirectoryEntryCount, ConsoleRows);
+					}
 					SelectedIndex = IndexToJumpTo;
 				}
 				

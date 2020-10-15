@@ -13,6 +13,8 @@
 // 'g'   - Jump to first entry starting with the following character (case insensitive)
 // '/'   - Search (case insensitive)
 // '?'   - Search (case sensitive)
+// 'C-f' - Move a page forward
+// 'C-b' - Move a page backward
 // 'C-w' - Clear but continue search
 // 'esc' - Clear search and enter browsing mode
 // 'q'   - Quit
