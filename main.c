@@ -511,25 +511,39 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 
 			ConsoleCleanup();
 			pid_t ChildProcessID = fork();
+
 			if (0 == ChildProcessID)
 			{
 				// NOTE(Felix): This is the child process
 
-				// NOTE(Felix): Unlink from parent if it's a console application
+				// NOTE(Felix): If not graphical application, perform another fork
+				// to prevent zombie child processes
 				if (0 == ProgramToUseConfig.IsConsoleApplication)
 				{
-					setsid();
+					if (0 == fork())
+					{
+						// NOTE(Felix): This is the process which will run
+						// the graphical application in a moment.
+						// Detach all standard file descriptors
+						close (STDIN_FILENO);
+						close (STDOUT_FILENO);
+						close (STDERR_FILENO);
+					}
+					else
+					{
+						// afsb processs - this process - graphical process
+						// This process will simply terminate
+						exit(0);
+					}
 				}
 				execl(ProgramToUseConfig.PathToProgram, ProgramName, Entry->Name, 0);
 			}
 			else
 			{
 				// NOTE(Felix): This is the parent process
-				if (ProgramToUseConfig.IsConsoleApplication)
-				{
-					// NOTE(Felix): Wait for child to finish, as it is using the console drawing 
-					waitpid(ChildProcessID, 0, 0);
-				}
+				// Wait for child to finish, as it is using the console drawing 
+				// or is performing the double fork
+				waitpid(ChildProcessID, 0, 0);
 			}
 			ConsoleSetup();
 		} break;
