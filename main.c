@@ -525,9 +525,9 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 						// NOTE(Felix): This is the process which will run
 						// the graphical application in a moment.
 						// Detach all standard file descriptors
-						close (STDIN_FILENO);
-						close (STDOUT_FILENO);
-						close (STDERR_FILENO);
+						//close (STDIN_FILENO);
+						//close (STDOUT_FILENO);
+						//close (STDERR_FILENO);
 					}
 					else
 					{
