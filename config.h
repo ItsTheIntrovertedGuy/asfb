@@ -37,4 +37,7 @@ global_variable file_type_config GLOBALFileTypeConfig[] = {
 	{ ".mp4",       "/bin/mpv",                0            },
 	{ ".mkv",       "/bin/mpv",                0            },
 	{ ".avi",       "/bin/mpv",                0            },
+	{ ".mp3",       "/bin/mpv",                0            },
+	{ ".flac",      "/bin/mpv",                0            },
+	{ ".ogg",       "/bin/mpv",                0            },
 };
