@@ -28,6 +28,11 @@
 // - Some kind of mechanism that doesn't make our program crash if we don't have enough memory
 //     to hold all directory entries at once
 
+// TODO(Felix): Bugs:
+//  - Sometimes our selection is not within the view
+//  - Entering a folder after search does not get rid of the filter (visually)
+//  - Filtering for words when scrolled may result in empty view even though items pass filter (enter pushes them into view)
+
 global_variable b32 GLOBALUpdateConsoleDimensions = 0;
 
 internal char *
