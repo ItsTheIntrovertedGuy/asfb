@@ -1,6 +1,7 @@
 #define _DEFAULT_SOURCE
 
 #include <linux/limits.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #include <dirent.h>
 #include <signal.h>
@@ -455,7 +456,7 @@ ConsoleCleanup(void)
 	ScreenClear();
 	EchoEnable();
 	CursorShow();
-	CursorMove(0, 0);
+	CursorMoveTo(0, 0);
 }
 
 internal i32
@@ -513,16 +514,15 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 
 			file_type_config ProgramToUseConfig = GetProgramToUseConfig(Entry->Name);
 			char *ProgramName = GetProgramNameFromFullPath(ProgramToUseConfig.PathToProgram);
-
 			ConsoleCleanup();
 			pid_t ChildProcessID = fork();
-
 			if (0 == ChildProcessID)
 			{
 				// NOTE(Felix): This is the child process
 
-				// NOTE(Felix): If not graphical application, perform another fork
+				// NOTE(Felix): If graphical application, perform another fork
 				// to prevent zombie child processes
+				// so it becomes the OS' responsibility to clean up after that process terminates
 				if (0 == ProgramToUseConfig.IsConsoleApplication)
 				{
 					if (0 == fork())
@@ -530,24 +530,28 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 						// NOTE(Felix): This is the process which will run
 						// the graphical application in a moment.
 						// Detach all standard file descriptors
-						//close (STDIN_FILENO);
-						//close (STDOUT_FILENO);
-						//close (STDERR_FILENO);
+						int NullFd = open("/dev/null", O_RDWR);
+						Assert(NullFd > 0);
+						dup2(NullFd, STDIN_FILENO);
+						dup2(NullFd, STDOUT_FILENO);
+						dup2(NullFd, STDERR_FILENO);
 					}
 					else
 					{
-						// afsb processs - this process - graphical process
+						// There's three processes:
+						// asfb processs - *this process* - graphical process
 						// This process will simply terminate
 						exit(0);
 					}
 				}
 				execl(ProgramToUseConfig.PathToProgram, ProgramName, Entry->Name, 0);
+				exit(0); // Exit if execl failes for some reason
 			}
 			else
 			{
 				// NOTE(Felix): This is the parent process
 				// Wait for child to finish, as it is using the console drawing 
-				// or is performing the double fork
+				// or is still in the process of performing the double fork
 				waitpid(ChildProcessID, 0, 0);
 			}
 			ConsoleSetup();
@@ -802,7 +806,7 @@ main(i32 ArgumentCount, char **Arguments)
 			     ++InternalEntryIndex)
 			{
 				internal_directory_entry CurrentEntry = CurrentDirectoryEntriesBuffer[InternalEntryIndex];
-				CursorMove((i32)InternalEntryIndex-StartDrawIndex, 0);
+				CursorMoveTo((i32)InternalEntryIndex-StartDrawIndex, 0);
 
 				color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
 				ColorSet(LineColor);
@@ -813,7 +817,7 @@ main(i32 ArgumentCount, char **Arguments)
 		else
 		{
 			// NOTE(Felix): Display that this directory is empty
-			CursorMove(0, 0);
+			CursorMoveTo(0, 0);
 			color LineColor = { 0 };
 			LineColor.Background = COLOR_DEFAULT_BACKGROUND;
 			LineColor.Foreground = COLOR_UNSELECTED_FOREGROUND_DIRECTORY;
@@ -830,7 +834,7 @@ main(i32 ArgumentCount, char **Arguments)
 			ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE ||
 			ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE)
 		{
-			CursorMove(ConsoleRows-1, 0);
+			CursorMoveTo(ConsoleRows-1, 0);
 			ColorResetToDefault();
 			ClearCurrentLine();
 			printf("Search term (%s): %s", 
