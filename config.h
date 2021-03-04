@@ -18,6 +18,7 @@
 // 'C-w' - Clear but continue search
 // 'esc' - Clear search and enter browsing mode
 // 'q'   - Quit
+// TODO(Felix): 'x' for 7z unzip?
 
 #define SCROLL_OFF 5
 
