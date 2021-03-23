@@ -2,7 +2,7 @@ OPTIONS=-Wextra -Wall -Werror -pedantic -std=c99 -Wformat=2 -Wformat-truncation 
 DISABLEDWARNINGS=-Wno-unused-variable -Wno-unused-function -Wno-unused-parameter -Wno-missing-field-initializers
 OPTIMIZATIONS=-O3
 
-INCLUDES=-I$${HOME}/Programming/C/include/
+INCLUDES=
 LIBRARIES=
 
 CODEFLAGS=

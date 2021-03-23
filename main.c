@@ -767,7 +767,7 @@ main(i32 ArgumentCount, char **Arguments)
 
 	// NOTE(Felix): Setup state and filter buffer two states will use
 	program_state ProgramState = PROGRAM_STATE_BROWSING;
-	b32 FilterHiddenEntries = 0;
+	b32 FilterHiddenEntries = 1;
 	b32 FilterIsCaseSensitive = 0;
 	enum { FILTER_BUFFER_SIZE = 256 };
 	char FilterBuffer[FILTER_BUFFER_SIZE] = { 0 };
