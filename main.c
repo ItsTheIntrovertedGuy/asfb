@@ -31,8 +31,6 @@
 
 // TODO(Felix): Bugs:
 //  - Sometimes our selection is not within the view
-//  - Entering a folder after search does not get rid of the filter (visually)
-//  - Filtering for words when scrolled may result in empty view even though items pass filter (enter pushes them into view)
 
 global_variable b32 GLOBALUpdateConsoleDimensions = 0;
 
@@ -582,6 +580,45 @@ ClearFilter(char *FilterBuffer, u32 *FilterBufferIndex)
 	*FilterBufferIndex = 0;
 }
 
+internal i32
+CenterIndexByReturningStartDrawIndex(i32 SelectedIndex, i32 StartDrawIndex, 
+                                     u32 EntryCount, i32 ConsoleRows)
+{
+	i32 HalfHeight = ConsoleRows / 2;
+
+	if (SelectedIndex - HalfHeight < 0)
+	{
+		// NOTE(Felix): Centering the selection is not possible because we're
+		// too close to the start, clamp
+		return (0);
+	}
+	else if (SelectedIndex + HalfHeight >= (i32)EntryCount)
+	{
+		// NOTE(Felix): Centering the selection is not possible because we're
+		// too close to the end, clamp
+		return ((i32)EntryCount - ConsoleRows);
+	}
+	else
+	{
+		return (SelectedIndex - HalfHeight);
+	}
+}
+
+internal b32
+IndexIsOffscreen(i32 SelectedIndex, i32 StartDrawIndex, i32 ConsoleRows)
+{
+	if (SelectedIndex < StartDrawIndex ||
+	    SelectedIndex - StartDrawIndex >= ConsoleRows)
+	{
+		return (1);
+	}
+	else
+	{
+		return (0);
+	}
+}
+
+
 internal void
 SearchFilterInputCharacter(internal_directory_entry *EntriesBuffer, u32 *EntryCount, 
                            i32 *SelectedIndex, i32 *StartDrawIndex, i32 ConsoleRows,
@@ -625,6 +662,11 @@ SearchFilterInputCharacter(internal_directory_entry *EntriesBuffer, u32 *EntryCo
 			                                 DirectoryPath, FilterHiddenEntries,
 			                                 0, 0);
 			*ProgramState = PROGRAM_STATE_BROWSING;
+			if (IndexIsOffscreen(*SelectedIndex, *StartDrawIndex, ConsoleRows))
+			{
+				*StartDrawIndex = CenterIndexByReturningStartDrawIndex(*SelectedIndex, *StartDrawIndex,
+																	   *EntryCount, ConsoleRows);
+			}
 		} break;
 
 			// NOTE(Felix): Return to browsing mode.
@@ -673,46 +715,9 @@ SearchFilterInputCharacter(internal_directory_entry *EntriesBuffer, u32 *EntryCo
 						           sizeof(EntriesBuffer[0]) * SlotsToMove);
 					}
 				}
+				
 			}
 		} break;
-	}
-}
-
-internal b32
-IndexIsOffscreen(i32 SelectedIndex, i32 StartDrawIndex, i32 ConsoleRows)
-{
-	if (SelectedIndex < StartDrawIndex ||
-	    SelectedIndex - StartDrawIndex >= ConsoleRows)
-	{
-		return (1);
-	}
-	else
-	{
-		return (0);
-	}
-}
-
-internal i32
-CenterIndexByReturningStartDrawIndex(i32 SelectedIndex, i32 StartDrawIndex, 
-                                     u32 EntryCount, i32 ConsoleRows)
-{
-	i32 HalfHeight = ConsoleRows / 2;
-
-	if (SelectedIndex - HalfHeight < 0)
-	{
-		// NOTE(Felix): Centering the selection is not possible because we're
-		// too close to the start, clamp
-		return (0);
-	}
-	else if (SelectedIndex + HalfHeight >= (i32)EntryCount)
-	{
-		// NOTE(Felix): Centering the selection is not possible because we're
-		// too close to the end, clamp
-		return ((i32)EntryCount - ConsoleRows);
-	}
-	else
-	{
-		return (SelectedIndex - HalfHeight);
 	}
 }
 
@@ -799,51 +804,54 @@ main(i32 ArgumentCount, char **Arguments)
 	i32 StartDrawIndex = 0;
 	while (0 == ExitProgram)
 	{
-		ColorResetToDefault();
-		ScreenClear();
-
-		if (CurrentDirectoryEntryCount > 0)
+		// Rendering
 		{
-			// NOTE(Felix): Print all valid entries
-			for (i32 InternalEntryIndex = StartDrawIndex;
-			     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)CurrentDirectoryEntryCount);
-			     ++InternalEntryIndex)
-			{
-				internal_directory_entry CurrentEntry = CurrentDirectoryEntriesBuffer[InternalEntryIndex];
-				CursorMoveTo((i32)InternalEntryIndex-StartDrawIndex, 0);
+			ColorResetToDefault();
+			ScreenClear();
 
-				color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
+			if (CurrentDirectoryEntryCount > 0)
+			{
+				// NOTE(Felix): Print all valid entries
+				for (i32 InternalEntryIndex = StartDrawIndex;
+				     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)CurrentDirectoryEntryCount);
+				     ++InternalEntryIndex)
+				{
+					internal_directory_entry CurrentEntry = CurrentDirectoryEntriesBuffer[InternalEntryIndex];
+					CursorMoveTo((i32)InternalEntryIndex-StartDrawIndex, 0);
+
+					color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
+					ColorSet(LineColor);
+					ClearCurrentLine();
+					printf("%s", CurrentEntry.Name);
+				}
+			}
+			else
+			{
+				// NOTE(Felix): Display that this directory is empty
+				CursorMoveTo(0, 0);
+				color LineColor = { 0 };
+				LineColor.Background = COLOR_DEFAULT_BACKGROUND;
+				LineColor.Foreground = COLOR_UNSELECTED_FOREGROUND_DIRECTORY;
 				ColorSet(LineColor);
 				ClearCurrentLine();
-				printf("%s", CurrentEntry.Name);
+				printf("<empty>");
 			}
-		}
-		else
-		{
-			// NOTE(Felix): Display that this directory is empty
-			CursorMoveTo(0, 0);
-			color LineColor = { 0 };
-			LineColor.Background = COLOR_DEFAULT_BACKGROUND;
-			LineColor.Foreground = COLOR_UNSELECTED_FOREGROUND_DIRECTORY;
-			ColorSet(LineColor);
-			ClearCurrentLine();
-			printf("<empty>");
-		}
 
 
-		// NOTE(Felix): Display search string
-		// TODO(Felix): Debug stuff, is pretty ugly and will probably hide an entry
-		// if we're filling all rows
-		if (FilterBuffer[0] != 0 ||
-		    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE ||
-		    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE)
-		{
-			CursorMoveTo(ConsoleRows-1, 0);
-			ColorResetToDefault();
-			ClearCurrentLine();
-			printf("Search term (%s): %s", 
-			       (FilterIsCaseSensitive) ? "(Case sensitive)" : ("Case insensitive"),
-			       FilterBuffer);
+			// NOTE(Felix): Display search string
+			// TODO(Felix): Debug stuff, is pretty ugly and will probably hide an entry
+			// if we're filling all rows
+			if (FilterBuffer[0] != 0 ||
+			    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE ||
+			    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE)
+			{
+				CursorMoveTo(ConsoleRows-1, 0);
+				ColorResetToDefault();
+				ClearCurrentLine();
+				printf("Search term (%s): %s", 
+				       (FilterIsCaseSensitive) ? "(Case sensitive)" : ("Case insensitive"),
+				       FilterBuffer);
+			}
 		}
 
 
@@ -987,6 +995,7 @@ main(i32 ArgumentCount, char **Arguments)
 
 					// NOTE(Felix): Filter case   sensitive
 					case '/': {
+						StartDrawIndex = 0;
 						ProgramState = PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE;
 						ClearFilter(FilterBuffer, &FilterBufferIndex);
 						DirectoryReadIntoBufferAndFilter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount,
@@ -996,6 +1005,7 @@ main(i32 ArgumentCount, char **Arguments)
 
 					// NOTE(Felix): Filter case insensitive
 					case '?': {
+						StartDrawIndex = 0;
 						ProgramState = PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE;
 						ClearFilter(FilterBuffer, &FilterBufferIndex);
 						DirectoryReadIntoBufferAndFilter(CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount,
