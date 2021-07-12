@@ -488,6 +488,13 @@ RefreshCurrentDirectory(internal_directory_entry *EntriesBuffer, u32 *EntryCount
 }
 
 internal void
+ClearFilter(char *FilterBuffer, u32 *FilterBufferIndex)
+{
+	FilterBuffer[0] = 0;
+	*FilterBufferIndex = 0;
+}
+
+internal void
 OpenFileOrEnterDirectory(internal_directory_entry *Entry, 
                          internal_directory_entry *EntriesBuffer, u32 *EntryCount,
                          i32 *SelectedIndex, i32 *StartDrawIndex, i32 ConsoleRows,
@@ -530,9 +537,9 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 						// Detach all standard file descriptors
 						int NullFd = open("/dev/null", O_RDWR);
 						Assert(NullFd > 0);
-						dup2(NullFd, STDIN_FILENO);
-						dup2(NullFd, STDOUT_FILENO);
-						dup2(NullFd, STDERR_FILENO);
+						dup2(STDIN_FILENO,  NullFd);
+						dup2(STDOUT_FILENO, NullFd);
+						dup2(STDERR_FILENO, NullFd);
 					}
 					else
 					{
@@ -557,9 +564,7 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 
 		case ENTRY_TYPE_DIRECTORY: {
 			// Reset filter after entering directory
-			*FilterBuffer = 0;
-			*FilterBufferIndex = 0;
-
+			ClearFilter(FilterBuffer, FilterBufferIndex);
 			DirectoryEnter(PathBuffer, Entry->Name);
 			DirectoryReadIntoBufferAndFilter(EntriesBuffer, EntryCount, PathBuffer, 
 			                                 FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive);
@@ -571,13 +576,6 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 			// noop
 		} break;
 	}
-}
-
-internal void
-ClearFilter(char *FilterBuffer, u32 *FilterBufferIndex)
-{
-	FilterBuffer[0] = 0;
-	*FilterBufferIndex = 0;
 }
 
 internal i32
