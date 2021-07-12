@@ -1012,7 +1012,6 @@ main(i32 ArgumentCount, char **Arguments)
 
 					// NOTE(Felix): Open file or enter directory
 					case 'l': {
-						ClearFilter(FilterBuffer, &FilterBufferIndex);
 						internal_directory_entry *Entry = &CurrentDirectoryEntriesBuffer[SelectedIndex];
 						OpenFileOrEnterDirectory(Entry, 
 						                         CurrentDirectoryEntriesBuffer, &CurrentDirectoryEntryCount,
