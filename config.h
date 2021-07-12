@@ -41,5 +41,6 @@ global_variable file_type_config GLOBALFileTypeConfig[] = {
 	{ ".mp3",       "/bin/mpv",                0            },
 	{ ".flac",      "/bin/mpv",                0            },
 	{ ".ogg",       "/bin/mpv",                0            },
+	{ ".opus",      "/bin/mpv",                0            },
 	{ ".wma",       "/bin/mpv",                0            },
 };

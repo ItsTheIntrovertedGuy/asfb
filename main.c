@@ -457,23 +457,32 @@ ConsoleCleanup(void)
 	CursorMoveTo(0, 0);
 }
 
-internal i32
-CalculateStartDrawIndex(i32 NumberOfEntries, i32 SelectedIndex, i32 ConsoleRows)
+internal i32 
+UpdateStartDrawIndex(i32 NumberOfEntries, i32 SelectedIndex, i32 ConsoleRows) 
 {
-	i32 StartDrawIndex = 0;
-	if (SelectedIndex < ConsoleRows - SCROLL_OFF)
+	// Try to center it as good as possible
+	i32 MaxEntriesOnScreen = ConsoleRows-2;
+	
+	// Case: All entries can be displayed at the same time
+	if (NumberOfEntries <= MaxEntriesOnScreen)
 	{
-		StartDrawIndex = 0;
+		return (0);
 	}
-	else if (SelectedIndex >= NumberOfEntries - ConsoleRows + SCROLL_OFF)
+	
+	// Case: Centering would overshoot top elements
+	if (SelectedIndex - MaxEntriesOnScreen/2 < 0) 
 	{
-		StartDrawIndex = NumberOfEntries - ConsoleRows;
+		return (0);
 	}
-	else
+	
+	// Case: Centering would overshoot bottom elements
+	if (SelectedIndex + MaxEntriesOnScreen/2 >= NumberOfEntries)
 	{
-		StartDrawIndex = SelectedIndex - (ConsoleRows/2);
+		return (NumberOfEntries - MaxEntriesOnScreen);
 	}
-	return (StartDrawIndex);
+	
+	// Rest: Should center just fine
+	return (SelectedIndex - MaxEntriesOnScreen/2);
 }
 
 internal void
@@ -537,9 +546,12 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 						// Detach all standard file descriptors
 						int NullFd = open("/dev/null", O_RDWR);
 						Assert(NullFd > 0);
-						dup2(STDIN_FILENO,  NullFd);
-						dup2(STDOUT_FILENO, NullFd);
-						dup2(STDERR_FILENO, NullFd);
+						//dup2(STDIN_FILENO,  NullFd);
+						//dup2(STDOUT_FILENO, NullFd);
+						//dup2(STDERR_FILENO, NullFd);
+						dup2(NullFd, STDIN_FILENO);
+						dup2(NullFd, STDOUT_FILENO);
+						dup2(NullFd, STDERR_FILENO);
 					}
 					else
 					{
@@ -569,7 +581,7 @@ OpenFileOrEnterDirectory(internal_directory_entry *Entry,
 			DirectoryReadIntoBufferAndFilter(EntriesBuffer, EntryCount, PathBuffer, 
 			                                 FilterHiddenEntries, FilterBuffer, FilterIsCaseSensitive);
 			*SelectedIndex = 0;
-			*StartDrawIndex = CalculateStartDrawIndex((i32)*EntryCount, *SelectedIndex, ConsoleRows);
+			*StartDrawIndex = UpdateStartDrawIndex((i32)*EntryCount, *SelectedIndex, ConsoleRows);
 		} break;
 
 		default: {
@@ -804,51 +816,132 @@ main(i32 ArgumentCount, char **Arguments)
 	{
 		// Rendering
 		{
-			ColorResetToDefault();
-			ScreenClear();
+			// Clear window
+			{
+				ColorResetToDefault();
+				for (i32 Y = 0; Y < ConsoleRows; ++Y) 
+				{
+					CursorMoveTo(Y, 0);
+					ClearCurrentLine();
+				}
+				CursorMoveTo(0, 0);
+			}
+
+			// NOTE(Felix): Print outline Box
+			{
+				// Top
+				{
+					// Print path
+					CursorMoveTo(0, 0);
+					printf("%s", PathBuffer);
+					
+					// Fill rest
+					printf("\u255e");
+					for (i32 currentX = (i32)StringLength(PathBuffer) + 1;
+						 currentX+1 < ConsoleColumns; 
+						 ++currentX) 
+					{
+						printf("\u2550");
+					}
+				}
+				
+				// Top right corner
+				printf("\u2557");
+				
+				// Right side
+				for (i32 Y = 1; Y < ConsoleRows-1; ++Y) 
+				{
+					CursorMoveTo(Y, ConsoleColumns-1);
+					printf("\u2551");
+				}
+				
+				// Left side
+				{
+					CursorMoveTo(1, 0);
+					printf("\u2565");
+					for (i32 Y = 2; Y < ConsoleRows-2; ++Y) 
+					{
+						CursorMoveTo(Y, 0);
+						printf("\u2551");
+					}
+				}
+
+				// Bottom
+				if (FilterBuffer[0] != 0 ||
+				    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE ||
+				    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE)
+				{
+					// Display current search 
+
+					// Thing above bottom left corner
+					CursorMoveTo(ConsoleRows-2, 0);
+					printf("\u2568");
+					
+					// Bottom contains current search
+					CursorMoveTo(ConsoleRows, 0);
+					char *SearchStringPreRamble = (FilterIsCaseSensitive) ? "(Case sensitive): " : ("Case insensitive: ");
+					printf("%s%s", SearchStringPreRamble, FilterBuffer);
+
+					// Bottom side
+					printf("\u255e");
+					for (i32 currentX = (i32)StringLength(SearchStringPreRamble) + (i32)FilterBufferIndex + 1; 
+						 currentX < ConsoleColumns-1; 
+						 ++currentX) 
+					{
+						printf("\u2550");
+					}
+					
+					// Bottom right corner
+					printf("\u255d");
+				}
+				else
+				{
+					// Just draw box outline
+					 
+					// Thing above bottom left corner
+					CursorMoveTo(ConsoleRows-2, 0);
+					printf("\u2551");
+					
+					// Bottom Left corner
+					CursorMoveTo(ConsoleRows-1, 0);
+					printf("\u255a");
+					
+					// Bottom side
+					for (i32 currentX = 1; currentX < ConsoleColumns-1; ++currentX) 
+					{
+						printf("\u2550");
+					}
+					
+					// Bottom right corner
+					printf("\u255d");
+				}
+			}
 
 			if (CurrentDirectoryEntryCount > 0)
 			{
 				// NOTE(Felix): Print all valid entries
 				for (i32 InternalEntryIndex = StartDrawIndex;
-				     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows, (i32)CurrentDirectoryEntryCount);
+				     InternalEntryIndex < MIN(StartDrawIndex + ConsoleRows - 2, (i32)CurrentDirectoryEntryCount);
 				     ++InternalEntryIndex)
 				{
 					internal_directory_entry CurrentEntry = CurrentDirectoryEntriesBuffer[InternalEntryIndex];
-					CursorMoveTo((i32)InternalEntryIndex-StartDrawIndex, 0);
+					CursorMoveTo((i32)InternalEntryIndex-StartDrawIndex+1, 1);
 
 					color LineColor = LineColorGetFromEntry(CurrentEntry, (i32)InternalEntryIndex == SelectedIndex);
 					ColorSet(LineColor);
-					ClearCurrentLine();
+					//ClearCurrentLine();
 					printf("%s", CurrentEntry.Name);
 				}
 			}
 			else
 			{
 				// NOTE(Felix): Display that this directory is empty
-				CursorMoveTo(0, 0);
+				CursorMoveTo(1, 1);
 				color LineColor = { 0 };
 				LineColor.Background = COLOR_DEFAULT_BACKGROUND;
 				LineColor.Foreground = COLOR_UNSELECTED_FOREGROUND_DIRECTORY;
 				ColorSet(LineColor);
-				ClearCurrentLine();
 				printf("<empty>");
-			}
-
-
-			// NOTE(Felix): Display search string
-			// TODO(Felix): Debug stuff, is pretty ugly and will probably hide an entry
-			// if we're filling all rows
-			if (FilterBuffer[0] != 0 ||
-			    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_INSENSITIVE ||
-			    ProgramState == PROGRAM_STATE_ENTER_SEARCH_FILTER_CASE_SENSITIVE)
-			{
-				CursorMoveTo(ConsoleRows-1, 0);
-				ColorResetToDefault();
-				ClearCurrentLine();
-				printf("Search term (%s): %s", 
-				       (FilterIsCaseSensitive) ? "(Case sensitive)" : ("Case insensitive"),
-				       FilterBuffer);
 			}
 		}
 
@@ -869,12 +962,8 @@ main(i32 ArgumentCount, char **Arguments)
 			{
 				// NOTE(Felix): Update Dimensions and force redraw
 				ConsoleUpdateDimensions(&ConsoleRows, &ConsoleColumns);
+				StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 				GLOBALUpdateConsoleDimensions = 0;
-				if (IndexIsOffscreen(SelectedIndex, StartDrawIndex, ConsoleRows))
-				{
-					StartDrawIndex = CenterIndexByReturningStartDrawIndex(SelectedIndex, StartDrawIndex,
-																		  CurrentDirectoryEntryCount, ConsoleRows);
-				}
 				continue;
 			}
 
@@ -892,24 +981,13 @@ main(i32 ArgumentCount, char **Arguments)
 					// NOTE(Felix): Move down
 					case 'j': {
 						SelectedIndex = MIN((i32)CurrentDirectoryEntryCount-1, SelectedIndex+1);
-
-						// NOTE(Felix): Scrolling
-						if (SelectedIndex - StartDrawIndex >= ConsoleRows - SCROLL_OFF &&
-						    SelectedIndex + SCROLL_OFF < (i32)CurrentDirectoryEntryCount) // Only scroll if not all entries are displayed
-						{
-							StartDrawIndex++;
-						}
+						StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 					} break;
 
 					// NOTE(Felix): Move Up
 					case 'k': {
 						SelectedIndex = MAX(0, SelectedIndex-1);
-
-						// NOTE(Felix): Scrolling
-						if (SelectedIndex - StartDrawIndex <= SCROLL_OFF)
-						{
-							StartDrawIndex = MAX(StartDrawIndex-1, 0);
-						}
+						StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 					} break;
 
 					// NOTE(Felix): Leave directory
@@ -928,7 +1006,7 @@ main(i32 ArgumentCount, char **Arguments)
 							SelectedIndex = DirectoryGetIndexFromName(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount, PreviousDirectoryStringBuffer);
 
 							// NOTE(Felix): Center selection
-							StartDrawIndex = CalculateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
+							StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 						}
 					} break;
 
@@ -968,22 +1046,15 @@ main(i32 ArgumentCount, char **Arguments)
 						{
 							i32 FirstFileIndex = DirectoryGetFirstFileEntryIndex(CurrentDirectoryEntriesBuffer, CurrentDirectoryEntryCount);
 							FirstFileIndex = CLAMP(FirstFileIndex, 0, (i32)CurrentDirectoryEntryCount-1);
-
-							if (IndexIsOffscreen(FirstFileIndex, StartDrawIndex, ConsoleRows))
-							{
-								StartDrawIndex = CenterIndexByReturningStartDrawIndex(FirstFileIndex, StartDrawIndex,
-																					  CurrentDirectoryEntryCount, ConsoleRows);
-							}
 							SelectedIndex = FirstFileIndex;
+							StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 						}
 					} break;
 
 					// NOTE(Felix): Jump to end
 					case 'e': {
 						SelectedIndex = (i32)CurrentDirectoryEntryCount-1;
-
-						// NOTE(Felix): Scroll if not all entries fit in the window
-						StartDrawIndex = MAX((i32)CurrentDirectoryEntryCount - ConsoleRows, 0);
+						StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 					} break;
 
 					// NOTE(Felix): Try to jump to character given afterwards
@@ -1021,46 +1092,16 @@ main(i32 ArgumentCount, char **Arguments)
 
 					// NOTE(Felix): Skip a page forward
 					case 6: { // CTRL-F
-						if ((i32)CurrentDirectoryEntryCount - StartDrawIndex < ConsoleRows)
-						{
-							// NOTE(Felix): Last index is on screen, just select that
-							SelectedIndex = (i32)CurrentDirectoryEntryCount-1;
-						}
-						else if (StartDrawIndex + 2*ConsoleRows < (i32)CurrentDirectoryEntryCount)
-						{
-							// NOTE(Felix): Skipping a page does not display the last entry, so just
-							// happily skip along
-							SelectedIndex  += ConsoleRows;
-							StartDrawIndex += ConsoleRows;
-						}
-						else 
-						{
-							// NOTE(Felix): Scrolling reveals the end of all entries
-							StartDrawIndex = (i32)CurrentDirectoryEntryCount - ConsoleRows;
-							SelectedIndex = MIN((i32)CurrentDirectoryEntryCount - 1, SelectedIndex + ConsoleRows);
-						}
+						i32 EntriesDisplayed = ConsoleRows-2;
+						SelectedIndex = CLAMP(0, SelectedIndex+EntriesDisplayed, (i32)CurrentDirectoryEntryCount-1);
+						StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 					} break;
 
 					// NOTE(Felix): Skip a page backward
 					case 2: { // CTRL-B
-						if (StartDrawIndex == 0)
-						{
-							// NOTE(Felix): First index is on screen, just select that
-							SelectedIndex = 0;
-						}
-						else if (StartDrawIndex - ConsoleRows > 0)
-						{
-							// NOTE(Felix): Skipping a page does not display first entry, so just
-							// happily skip along
-							SelectedIndex  -= ConsoleRows;
-							StartDrawIndex -= ConsoleRows;
-						}
-						else
-						{
-							// NOTE(Felix): Scrolling reveals the start of all entries
-							StartDrawIndex = 0;
-							SelectedIndex = MAX(0, SelectedIndex - ConsoleRows);
-						}
+						i32 EntriesDisplayed = ConsoleRows-2;
+						SelectedIndex = CLAMP(0, SelectedIndex-EntriesDisplayed, (i32)CurrentDirectoryEntryCount-1);
+						StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 					} break;
 
 					// NOTE(Felix): Exit program
@@ -1092,12 +1133,8 @@ main(i32 ArgumentCount, char **Arguments)
 
 				if (IndexToJumpTo >= 0)
 				{
-					if (IndexIsOffscreen(IndexToJumpTo, StartDrawIndex, ConsoleRows))
-					{
-						StartDrawIndex = CenterIndexByReturningStartDrawIndex(SelectedIndex, StartDrawIndex, 
-																			  CurrentDirectoryEntryCount, ConsoleRows);
-					}
 					SelectedIndex = IndexToJumpTo;
+					StartDrawIndex = UpdateStartDrawIndex((i32)CurrentDirectoryEntryCount, SelectedIndex, ConsoleRows);
 				}
 
 				ProgramState = PROGRAM_STATE_BROWSING;
